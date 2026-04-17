@@ -12,20 +12,24 @@
 # initFiles schema:
 #   {
 #     profile = {
-#       nixos       = { etcName = "profile"; };
+#       nixos       = null;                     # null → don't write file on NixOS
 #       homeManager = { homePath = ".profile"; };
-#       darwin      = { etcName = "profile"; };  # or null
-#       when        = "login";  # "always" | "login" | "interactive"
-#       envVar      = null;     # if set, the login file exports this var
+#       darwin      = { etcName = "profile"; };
+#       when        = "login";                  # "always" | "login" | "interactive"
+#       envVar      = null;                     # if set, login file exports this var
 #     };
 #     rc = {
 #       nixos       = { etcName = "kshrc"; };
 #       homeManager = { homePath = ".kshrc"; };
 #       darwin      = { etcName = "kshrc"; };
 #       when        = "interactive";
-#       envVar      = "ENV";    # login file will: export ENV=/etc/kshrc
+#       envVar      = "ENV";    # login file will export ENV pointing to this file
 #     };
 #   }
+#
+# When nixos is null for a login file but an interactive file has envVar,
+# the NixOS module sets environment.variables.${envVar} globally so the
+# shell picks up the interactive file without writing a conflicting login file.
 
 {
   name,
@@ -52,7 +56,10 @@
 
       upper = s: lib.toUpper s;
 
-      loginFileDef = lib.findFirst (f: f.when == "login") null (lib.attrValues initFiles);
+      # Files that actually get written on NixOS (nixos != null).
+      nixosFiles = lib.filterAttrs (_: f: f.nixos or null != null) initFiles;
+
+      loginFileDef = lib.findFirst (f: f.when == "login") null (lib.attrValues nixosFiles);
 
       doneVarName =
         if loginFileDef != null && loginFileDef.nixos ? etcName then
@@ -164,7 +171,15 @@
           };
         };
 
-      systemFiles = lib.mapAttrs' mkSystemFile initFiles;
+      systemFiles = lib.mapAttrs' mkSystemFile nixosFiles;
+
+      # If we didn't write a login file on NixOS but there are interactive
+      # files with envVar(s), set them globally so the shell picks them up
+      # via setEnvironment (which bash's /etc/profile already sources).
+      envVarsFromInteractive = lib.mapAttrs' (_: f: {
+        name = f.envVar;
+        value = "/etc/${f.nixos.etcName}";
+      }) (lib.filterAttrs (_: f: f.envVar != null && f.when == "interactive") nixosFiles);
 
     in
     {
@@ -232,6 +247,8 @@
           programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) cfge.shellAliases;
 
           environment.etc = systemFiles;
+
+          environment.variables = lib.mapAttrs (_: lib.mkDefault) envVarsFromInteractive;
 
           environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
 

@@ -17,9 +17,8 @@ let
 
     initFiles = {
       profile = {
-        nixos = {
-          etcName = "profile";
-        };
+        # Don't write /etc/profile on NixOS — bash already manages it.
+        nixos = null;
         homeManager = {
           homePath = ".profile";
         };
