@@ -18,76 +18,206 @@ Shells like **ksh93**, **mksh**, **yash**, or **dash** have no equivalent module
 
 `sh.nix` exports a single builder — `lib.mkPosixShellModule` — that generates `nixosModule`, `homeManagerModule`, and `darwinModule` for any POSIX shell, faithfully translating the conventions of the existing big-three modules.
 
-## Usage
+## Quick start
 
-Add `sh.nix` as a flake input, then call the builder from your shell's flake:
+### 1. Add sh.nix as a flake input
 
 ```nix
-# ksh93-flake/flake.nix
+# your-flake/flake.nix
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    shnix.url = "github:yourname/sh.nix";
+    shnix.url = "github:lane-core/sh.nix";
   };
 
   outputs = { self, nixpkgs, shnix }:
-    let
-      ksh = shnix.lib.mkPosixShellModule {
-        name    = "ksh";
-        package = nixpkgs.legacyPackages.x86_64-linux.ksh93;
-
-        initFiles = {
-          profile = {
-            nixos       = { etcName = "profile"; };
-            homeManager = { homePath = ".profile"; };
-            darwin      = { etcName = "profile"; };
-            when        = "login";
-            envVar      = null;
-          };
-          rc = {
-            nixos       = { etcName = "kshrc"; };
-            homeManager = { homePath = ".kshrc"; };
-            darwin      = { etcName = "kshrc"; };
-            when        = "interactive";
-            envVar      = "ENV";   # login file exports ENV=/etc/kshrc
-          };
-        };
-
-        # ksh93-specific options
-        extraOptions = {
-          options.programs.ksh.histfile = lib.mkOption { ... };
-        };
-
-        # ksh93-specific config
-        extraConfig = {
-          config.programs.ksh.interactiveShellInit = lib.mkAfter ''
-            HISTFILE="${config.programs.ksh.histfile}"
-          '';
-        };
-      };
-    in {
-      nixosModules.ksh       = ksh.nixosModule;
-      homeManagerModules.ksh = ksh.homeManagerModule;
-      darwinModules.ksh      = ksh.darwinModule;
-    };
+    # see below for creating your own shell module
 }
 ```
 
-End users then import the module and use it exactly like `programs.bash`:
+### 2. Call the builder
+
+```nix
+let
+  myShellModules = shnix.lib.mkPosixShellModule {
+    name = "yash";                    # the shell name
+    package = pkgs.yash;              # default package (or "yash" string, or null)
+
+    initFiles = {
+      profile = {
+        nixos       = { etcName = "profile"; };
+        homeManager = { homePath = ".profile"; };
+        darwin      = { etcName = "profile"; };
+        when        = "login";        # "login" | "interactive" | "always"
+        envVar      = null;           # e.g. "ENV" for ksh-style shells
+      };
+      rc = {
+        nixos       = { etcName = "yashrc"; };
+        homeManager = { homePath = ".yashrc"; };
+        darwin      = { etcName = "yashrc"; };
+        when        = "interactive";
+        envVar      = "YASH_LOADED";  # optional: login file exports this
+      };
+    };
+  };
+in {
+  nixosModules.yash       = myShellModules.nixosModule;
+  homeManagerModules.yash = myShellModules.homeManagerModule;
+  darwinModules.yash      = myShellModules.darwinModule;
+}
+```
+
+### 3. Users import and configure
 
 ```nix
 # home.nix
-{ programs.ksh = {
+{ programs.yash = {
     enable = true;
     shellAliases = { ll = "ls -l"; };
     interactiveShellInit = ''
-      set -o vi
+      set -o emacs
     '';
   };
 }
 ```
 
-## Design
+## The `initFiles` schema
+
+POSIX shells disagree on startup file names and semantics. The `initFiles` parameter lets you declare exactly which files exist, when they're sourced, and which environment variable points to them.
+
+```nix
+initFiles = {
+  # Each key is an arbitrary name (used for `cfg.<name>Extra` options).
+  profile = {
+    # Where the file lives on each platform:
+    nixos       = { etcName = "profile"; };     # writes /etc/profile
+    # nixos    = null;                           # skip writing on NixOS
+    homeManager = { homePath = ".profile"; };   # writes ~/.profile
+    darwin      = { etcName = "profile"; };     # writes /etc/profile
+    # darwin   = null;                           # skip writing on darwin
+
+    # When the shell reads this file:
+    when = "login";   # "login" | "interactive" | "always"
+
+    # If set, the login file exports this variable pointing to this file.
+    # Used for shells like ksh93 that use $ENV for interactive config.
+    envVar = null;
+  };
+
+  rc = {
+    nixos       = { etcName = "kshrc"; };
+    homeManager = { homePath = ".kshrc"; };
+    darwin      = { etcName = "kshrc"; };
+    when        = "interactive";
+    envVar      = "ENV";   # login file will: export ENV=/etc/kshrc
+  };
+};
+```
+
+### Special case: `nixos = null` for login files
+
+Some shells (like **ksh93**) hardcode `/etc/profile` for login shells. On NixOS, bash already writes `/etc/profile`. Rather than conflicting, set `nixos = null` for the login file:
+
+```nix
+profile = {
+  nixos = null;                    # don't write /etc/profile
+  homeManager = { homePath = ".profile"; };
+  darwin = { etcName = "profile"; };
+  when = "login";
+  envVar = null;
+};
+rc = {
+  nixos = { etcName = "kshrc"; };
+  homeManager = { homePath = ".kshrc"; };
+  darwin = { etcName = "kshrc"; };
+  when = "interactive";
+  envVar = "ENV";                  # sets environment.variables.ENV globally
+};
+```
+
+When the NixOS module sees this pattern, it:
+1. Does **not** write `/etc/profile`
+2. Writes `/etc/kshrc` for interactive shells
+3. Sets `environment.variables.ENV = "/etc/kshrc"` globally
+
+This works because bash's `/etc/profile` sources `setEnvironment`, which exports `ENV`. When ksh93 starts interactively, it reads `$ENV` → `/etc/kshrc`.
+
+## Generated options
+
+Each module exposes the same base options as `programs.bash`:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `programs.<name>.enable` | `bool` | Enable the module |
+| `programs.<name>.package` | `package` | The shell package |
+| `programs.<name>.shellAliases` | `attrsOf str` | Shell aliases |
+| `programs.<name>.shellInit` | `lines` | Run for all shells |
+| `programs.<name>.loginShellInit` | `lines` | Run for login shells |
+| `programs.<name>.interactiveShellInit` | `lines` | Run for interactive shells |
+| `programs.<name>.promptInit` | `lines` | Prompt configuration |
+| `programs.<name>.logoutExtra` | `lines` | Run on logout |
+
+Plus `home.shell.enable<Name>Integration` (e.g., `home.shell.enableKshIntegration`) for home-manager modules.
+
+## Adding shell-specific options
+
+Use `extraOptions` and `extraConfig` to layer shell-specific features on top of the POSIX base:
+
+```nix
+shnix.lib.mkPosixShellModule {
+  name = "ksh";
+  package = pkgs.ksh93;
+  initFiles = { /* ... */ };
+
+  # Additional options merged into programs.ksh
+  extraOptions = {
+    options.programs.ksh = {
+      histfile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = "\${HOME}/.ksh_history";
+        description = "Path to the ksh history file.";
+      };
+      histsize = lib.mkOption {
+        type = lib.types.int;
+        default = 10000;
+        description = "Number of history entries to keep.";
+      };
+    };
+  };
+
+  # Additional config that uses those options
+  extraConfig = {
+    config.programs.ksh.interactiveShellInit = lib.mkAfter ''
+      HISTFILE="${config.programs.ksh.histfile}"
+      HISTSIZE=${toString config.programs.ksh.histsize}
+    '';
+  };
+}
+```
+
+## POSIX script helpers
+
+`sh.nix` also exports POSIX shell script generators:
+
+```nix
+sh = shnix.lib.shell;
+
+sh.export "FOO" "bar"
+# => export FOO="bar"
+
+sh.exportAll { FOO = "bar"; BAZ = 42; }
+# => export FOO="bar"
+#    export BAZ="42"
+
+sh.mkAliases { ll = "ls -l"; g = null; }
+# => alias -- ll='ls -l'
+#    (null values are filtered out)
+
+sh.prependToVar ":" "PATH" [ "$HOME/bin" "$HOME/.local/bin" ]
+# => $HOME/bin:$HOME/.local/bin${PATH:+:}$PATH
+```
+
+## How it works
 
 ### Research basis
 
@@ -102,43 +232,25 @@ We traced the exact mechanisms in nixpkgs and home-manager:
 
 **Key insight**: the *aggregated content* (`setEnvironment`, `hm-session-vars.sh`, alias lines) is already POSIX. Only the **file wiring** and **shell-specific syntax** (shopt, setopt) vary.
 
-### Init file abstraction
+### Generated files
 
-POSIX shells disagree on startup file names and semantics:
+For each platform, the builder generates:
 
-| Shell | Login | Interactive | Always | Logout |
-|-------|-------|-------------|--------|--------|
-| bash | `.bash_profile` | `.bashrc` | — | `.bash_logout` |
-| zsh | `.zprofile` | `.zshrc` | `.zshenv` | `.zlogout` |
-| ksh93 | `.profile` | `$ENV` (`.kshrc`) | — | — |
-| mksh | `.profile` | `$ENV` (`.mkshrc`) | — | — |
+**NixOS**:
+- `environment.etc.<etcName>.text` with idempotency guards
+- Sources `config.system.build.setEnvironment` for env vars
+- Includes `.local` file hooks
+- Sets `environment.shells` and installs the package
 
-The `initFiles` parameter lets the consumer declare exactly which files exist, when they're sourced, and which environment variable points to them. The builder then generates the correct:
+**Home-manager**:
+- `home.file.<homePath>.text` with idempotency guards
+- Sources `config.home.sessionVariablesPackage`
+- Exports `ENV` variables from login files
+- Adds `home.shell.enable<Name>Integration` toggle
 
-- `environment.etc.<name>.text` (NixOS)
-- `home.file.<path>.text` (home-manager)
-- `environment.etc.<name>.text` (nix-darwin)
-
-with appropriate idempotency guards (`__ETC_*_SOURCED`, `__HM_*_SOURCED`), `setEnvironment` / `hm-session-vars.sh` sourcing, `.local` file hooks, and `ENV` variable exports.
-
-### Generated options
-
-Each module exposes the same base options as `programs.bash`:
-
-- `programs.<name>.enable`
-- `programs.<name>.package`
-- `programs.<name>.shellAliases`
-- `programs.<name>.shellInit`
-- `programs.<name>.loginShellInit`
-- `programs.<name>.interactiveShellInit`
-- `programs.<name>.promptInit`
-- `programs.<name>.logoutExtra`
-
-plus any `extraOptions` the consumer provides.
-
-### Shell integration
-
-The home-manager module adds `home.shell.enable<Name>Integration` (e.g., `home.shell.enableKshIntegration`) so other tools can toggle ksh support with the same pattern used for bash/zsh/fish.
+**nix-darwin**:
+- `environment.etc.<etcName>.text` (same semantics as NixOS)
+- Uses `__NIX_DARWIN_SET_ENVIRONMENT_DONE` guard
 
 ## Project structure
 
@@ -146,20 +258,16 @@ The home-manager module adds `home.shell.enable<Name>Integration` (e.g., `home.s
 .
 ├── flake.nix
 ├── lib/
-│   ├── default.nix           # public API
+│   ├── default.nix           # public API: mkPosixShellModule, shell helpers
 │   ├── mk-posix-shell.nix    # module generator
-│   └── shell-script.nix      # POSIX script helpers (exportAll, mkAliases, …)
+│   └── shell-script.nix      # POSIX script helpers
 └── example/
-    └── ksh93-consumer.nix    # example usage
+    └── ksh93-consumer.nix    # example: how ksh93.nix consumes this library
 ```
 
-## Status
+## Real-world usage
 
-This is a design scaffold. Open questions:
-
-1. **NixOS `/etc/profile` coordination**: if ksh93 sources `/etc/profile` on login and bash also writes `/etc/profile`, how do we avoid bash-specific code leaking into ksh93? (Current answer: we follow the zsh model — give ksh93 its own login file path when possible, or rely on POSIX-guarded sections.)
-2. **nix-darwin `/etc/profile`**: darwin's bash module does not write `/etc/profile` at all. Does a generic POSIX shell on darwin need one?
-3. **Completion integration**: bash has `environment.pathsToLink = [ "/share/bash-completion" ]`. How do we generalize this for arbitrary shells?
+- [ksh93.nix](https://github.com/lane-core/ksh93.nix) — ksh93u+m with full NixOS/nix-darwin/home-manager support
 
 ## License
 
