@@ -44,34 +44,33 @@ let
       };
     };
 
-    # ksh93-specific options layered on top of the POSIX base.
-    extraOptions = {
-      options.programs.ksh = {
-        histfile = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = "\${HOME}/.ksh_history";
-          description = ''
-            Path to the ksh history file.
-          '';
-        };
-
-        histsize = lib.mkOption {
-          type = lib.types.int;
-          default = 10000;
-          description = ''
-            Number of history entries to keep.
-          '';
-        };
+    # ksh93-specific programmable options.
+    # Each entry declares an option that the user can set in programs.ksh,
+    # and a generator that produces shell code injected into the target init file.
+    programmableOptions = {
+      shellOptions = {
+        type = with lib.types; listOf str;
+        default = [ ];
+        description = "Shell options to enable via set -o";
+        target = "interactiveShellInit";
+        generator = opts: lib.concatMapStringsSep "\n" (o: "set -o ${o}") opts;
       };
-    };
 
-    # ksh93-specific config that uses the extra options.
-    extraConfig = {
-      config.programs.ksh.interactiveShellInit = lib.mkAfter ''
-        # ksh93 history configuration
-        HISTFILE="${config.programs.ksh.histfile}"
-        HISTSIZE=${toString config.programs.ksh.histsize}
-      '';
+      histfile = {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Path to the ksh history file";
+        target = "interactiveShellInit";
+        generator = path: ''HISTFILE="${path}"'';
+      };
+
+      histsize = {
+        type = lib.types.int;
+        default = 10000;
+        description = "Number of history entries to keep";
+        target = "interactiveShellInit";
+        generator = n: "HISTSIZE=${toString n}";
+      };
     };
   };
 

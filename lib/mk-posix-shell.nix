@@ -3,11 +3,16 @@
 # and programs.fish.
 #
 # Parameters:
-#   name          - string: shell name, e.g. "ksh"
-#   package       - derivation or null: default shell package
-#   initFiles     - attrset describing initialization files (see below)
-#   extraOptions  - optional module fragment merged into options.programs.<name>
-#   extraConfig   - optional module fragment merged into config.programs.<name>
+#   name               - string: shell name, e.g. "ksh"
+#   package            - derivation or null: default shell package
+#   initFiles          - attrset describing initialization files (see below)
+#   extraOptions       - optional module fragment merged into options.programs.<name>
+#   extraConfig        - optional module fragment merged into config.programs.<name>
+#   programmableOptions
+#     - attrset of { type, default, description, target, generator }
+#     - target must be one of: shellInit | loginShellInit | interactiveShellInit
+#                              | promptInit | logoutExtra
+#     - generator: function from user-configured value → shell code string
 #
 # initFiles schema:
 #   {
@@ -37,8 +42,70 @@
   initFiles,
   extraOptions ? { },
   extraConfig ? { },
+  programmableOptions ? { },
 }:
 
+let
+  validTargets = [
+    "shellInit"
+    "loginShellInit"
+    "interactiveShellInit"
+    "promptInit"
+    "logoutExtra"
+  ];
+
+  isEmpty = val: val == null || val == [ ] || val == { } || val == false || val == "";
+
+  # Build option declarations from programmableOptions (needs lib at call site).
+  mkProgrammableOptionsDecl =
+    lib:
+    lib.mapAttrs (
+      _: def:
+      lib.mkOption {
+        type = def.type;
+        default = def.default;
+        description = def.description;
+      }
+    ) programmableOptions;
+
+  # Build an attrset of target → generated shell code string.
+  # This is computed in the module's let-binding and interpolated
+  # directly into init file templates, avoiding self-reference in config.
+  mkProgrammableCode =
+    lib: cfg:
+    let
+      optionsList = lib.mapAttrsToList (n: v: v // { _optName = n; }) programmableOptions;
+      targets = lib.unique (map (v: v.target) optionsList);
+
+      badTargets = lib.filter (t: !(lib.elem t validTargets)) targets;
+
+      mkCode =
+        target:
+        let
+          opts = lib.filter (v: v.target == target) optionsList;
+          snippets = lib.filter (s: s != "") (
+            map (
+              opt:
+              let
+                val = cfg.${opt._optName};
+              in
+              if isEmpty val then "" else opt.generator val
+            ) opts
+          );
+        in
+        lib.concatStringsSep "\n" snippets;
+    in
+    lib.throwIf (badTargets != [ ])
+      "mkPosixShellModule: invalid programmableOptions target(s): ${lib.concatStringsSep ", " badTargets}; expected one of: ${lib.concatStringsSep ", " validTargets}"
+      (
+        lib.listToAttrs (
+          map (target: {
+            name = target;
+            value = mkCode target;
+          }) targets
+        )
+      );
+in
 {
   # ─── NixOS module ───
   nixosModule =
@@ -55,6 +122,9 @@
       sh = import ./shell-script.nix { inherit lib; };
 
       upper = s: lib.toUpper s;
+
+      progDecl = mkProgrammableOptionsDecl lib;
+      progCode = mkProgrammableCode lib cfg;
 
       # Files that actually get written on NixOS (nixos != null).
       nixosFiles = lib.filterAttrs (_: f: f.nixos or null != null) initFiles;
@@ -83,26 +153,28 @@
           contentForWhen =
             if fileDef.when == "always" then
               ''
-                ${cfg.shellInit}
+                ${progCode.shellInit or ""}${cfg.shellInit}
               ''
             else if fileDef.when == "login" then
               ''
-                ${cfg.shellInit}
-                ${cfg.loginShellInit}
+                ${progCode.shellInit or ""}${cfg.shellInit}
+                ${progCode.loginShellInit or ""}${cfg.loginShellInit}
+                ${rcSourceForLogin}
               ''
             else if fileDef.when == "interactive" then
               ''
-                # If the login file was not loaded in a parent process, source it.
-                if [ -z "${doneVarName}" ]; then
-                    . /etc/${loginFileDef.nixos.etcName}
-                fi
-
+                ${lib.optionalString (loginFileDef != null) ''
+                  # If the login file was not loaded in a parent process, source it.
+                  if [ -z "${doneVarName}" ]; then
+                      . /etc/${loginFileDef.nixos.etcName}
+                  fi
+                ''}
                 # We are not always an interactive shell.
                 if [ -n "$PS1" ]; then
                     ${cfge.interactiveShellInit}
-                    ${cfg.interactiveShellInit}
+                    ${progCode.interactiveShellInit or ""}${cfg.interactiveShellInit}
                     ${aliasesStr}
-                    ${cfg.promptInit}
+                    ${progCode.promptInit or ""}${cfg.promptInit}
                 fi
               ''
             else
@@ -132,12 +204,12 @@
           guard =
             if fileDef.when == "interactive" then
               ''
-                if [ -n "$${guardVar}" ] || [ -n "$${noSysVar}" ]; then return; fi
+                if [ -n "''$${guardVar}" ] || [ -n "''$${noSysVar}" ]; then return; fi
                 ${guardVar}=1
               ''
             else
               ''
-                if [ -n "$${guardVar}" ]; then return; fi
+                if [ -n "''$${guardVar}" ]; then return; fi
                 ${guardVar}=1
               '';
 
@@ -172,6 +244,23 @@
         };
 
       systemFiles = lib.mapAttrs' mkSystemFile nixosFiles;
+
+      # Source interactive init files from login files (standard POSIX practice).
+      rcSourceForLogin =
+        let
+          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") nixosFiles;
+          mkSource = _: f: ''[ -r "/etc/${f.nixos.etcName}" ] && . "/etc/${f.nixos.etcName}"'';
+        in
+        if interactiveFiles == { } then
+          ""
+        else
+          ''
+            # Source interactive init files for login shells.
+            case $- in *i*)
+                ${lib.concatStringsSep "\n    " (lib.mapAttrsToList mkSource interactiveFiles)}
+                ;;
+            esac
+          '';
 
       # If we didn't write a login file on NixOS but there are interactive
       # files with envVar(s), set them globally so the shell picks them up
@@ -240,10 +329,11 @@
           type = lib.types.lines;
         };
       }
-      // extraOptions;
+      // extraOptions
+      // progDecl;
 
-      config =
-        lib.mkIf cfg.enable {
+      config = lib.mkIf cfg.enable (
+        {
           programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) cfge.shellAliases;
 
           environment.etc = systemFiles;
@@ -257,7 +347,8 @@
             "${cfg.package}/bin/${name}"
           ];
         }
-        // extraConfig;
+        // extraConfig
+      );
     };
 
   # ─── Home-manager module ───
@@ -275,10 +366,35 @@
 
       upper = s: lib.toUpper s;
 
+      progDecl = mkProgrammableOptionsDecl lib;
+      progCode = mkProgrammableCode lib cfg;
+
       aliasesStr = sh.mkAliases cfg.shellAliases;
 
       # Files that have an envVar (the login file will export these).
       envTargets = lib.filterAttrs (_: f: f.envVar != null) initFiles;
+
+      # Source interactive init files from login files (standard POSIX practice).
+      rcSourceForLogin =
+        let
+          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") initFiles;
+          mkSource =
+            _: f:
+            let
+              hp = "${config.home.homeDirectory}/${f.homeManager.homePath}";
+            in
+            ''[ -r "${hp}" ] && . "${hp}"'';
+        in
+        if interactiveFiles == { } then
+          ""
+        else
+          ''
+            # Source interactive init files for login shells.
+            case $- in *i*)
+                ${lib.concatStringsSep "\n    " (lib.mapAttrsToList mkSource interactiveFiles)}
+                ;;
+            esac
+          '';
 
       # Generate a single user init file.
       mkUserFile =
@@ -290,21 +406,22 @@
           contentForWhen =
             if fileDef.when == "always" then
               ''
-                ${cfg.shellInit}
+                ${progCode.shellInit or ""}${cfg.shellInit}
               ''
             else if fileDef.when == "login" then
               ''
-                ${cfg.shellInit}
-                ${cfg.loginShellInit}
+                ${progCode.shellInit or ""}${cfg.shellInit}
+                ${progCode.loginShellInit or ""}${cfg.loginShellInit}
+                ${rcSourceForLogin}
               ''
             else if fileDef.when == "interactive" then
               ''
                 # Only execute for interactive shells.
                 case $- in *i*) ;; *) return;; esac
 
-                ${cfg.interactiveShellInit}
+                ${progCode.interactiveShellInit or ""}${cfg.interactiveShellInit}
                 ${aliasesStr}
-                ${cfg.promptInit}
+                ${progCode.promptInit or ""}${cfg.promptInit}
               ''
             else
               throw "mkPosixShellModule: unknown 'when' value '${fileDef.when}' for file '${fileName}'";
@@ -328,7 +445,7 @@
               "";
 
           guard = ''
-            if [ -n "$${guardVar}" ]; then return; fi
+            if [ -n "''$${guardVar}" ]; then return; fi
             ${guardVar}=1
           '';
         in
@@ -412,7 +529,8 @@
             type = lib.types.lines;
           };
         }
-        // extraOptions;
+        // extraOptions
+        // progDecl;
 
         home.shell.${integrationOptionName} = lib.mkOption {
           type = lib.types.bool;
@@ -424,15 +542,16 @@
         };
       };
 
-      config =
-        lib.mkIf cfg.enable {
+      config = lib.mkIf cfg.enable (
+        {
           programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) config.home.shellAliases;
 
           home.file = userFiles;
 
           home.packages = lib.optional (cfg.package != null) cfg.package;
         }
-        // extraConfig;
+        // extraConfig
+      );
     };
 
   # ─── nix-darwin module ───
@@ -451,7 +570,12 @@
 
       upper = s: lib.toUpper s;
 
-      loginFileDef = lib.findFirst (f: f.when == "login") null (lib.attrValues initFiles);
+      progDecl = mkProgrammableOptionsDecl lib;
+      progCode = mkProgrammableCode lib cfg;
+
+      loginFileDef = lib.findFirst (f: f.when == "login") null (
+        lib.attrValues (lib.filterAttrs (_: f: f.darwin or null != null) initFiles)
+      );
 
       doneVarName =
         if loginFileDef != null && loginFileDef.darwin ? etcName then
@@ -472,24 +596,26 @@
           contentForWhen =
             if fileDef.when == "always" then
               ''
-                ${cfg.shellInit}
+                ${progCode.shellInit or ""}${cfg.shellInit}
               ''
             else if fileDef.when == "login" then
               ''
-                ${cfg.shellInit}
-                ${cfg.loginShellInit}
+                ${progCode.shellInit or ""}${cfg.shellInit}
+                ${progCode.loginShellInit or ""}${cfg.loginShellInit}
+                ${rcSourceForLogin}
               ''
             else if fileDef.when == "interactive" then
               ''
-                if [ -z "${doneVarName}" ]; then
-                    . /etc/${loginFileDef.darwin.etcName}
-                fi
-
+                ${lib.optionalString (loginFileDef != null) ''
+                  if [ -z "${doneVarName}" ]; then
+                      . /etc/${loginFileDef.darwin.etcName}
+                  fi
+                ''}
                 if [ -n "$PS1" ]; then
                     ${cfge.interactiveShellInit}
-                    ${cfg.interactiveShellInit}
+                    ${progCode.interactiveShellInit or ""}${cfg.interactiveShellInit}
                     ${aliasesStr}
-                    ${cfg.promptInit}
+                    ${progCode.promptInit or ""}${cfg.promptInit}
                 fi
               ''
             else
@@ -515,7 +641,7 @@
               "";
 
           guard = ''
-            if [ -n "$${guardVar}" ]; then return; fi
+            if [ -n "''$${guardVar}" ]; then return; fi
             ${guardVar}=1
           '';
 
@@ -549,9 +675,40 @@
           };
         };
 
+      # Source interactive init files from login files (standard POSIX practice).
+      rcSourceForLogin =
+        let
+          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") initFiles;
+          mkSource = _: f: ''[ -r "/etc/${f.darwin.etcName}" ] && . "/etc/${f.darwin.etcName}"'';
+        in
+        if interactiveFiles == { } then
+          ""
+        else
+          ''
+            # Source interactive init files for login shells.
+            case $- in *i*)
+                ${lib.concatStringsSep "\n    " (lib.mapAttrsToList mkSource interactiveFiles)}
+                ;;
+            esac
+          '';
+
       darwinFiles = lib.mapAttrs' mkDarwinFile (
         lib.filterAttrs (_: f: f.darwin or null != null) initFiles
       );
+
+      # If we didn't write a login file on darwin but there are interactive
+      # files with envVar(s), set them globally so the shell picks them up.
+      envVarsFromInteractive =
+        lib.mapAttrs'
+          (_: f: {
+            name = f.envVar;
+            value = "/etc/${f.darwin.etcName}";
+          })
+          (
+            lib.filterAttrs (
+              _: f: f.envVar != null && f.when == "interactive" && f.darwin or null != null
+            ) initFiles
+          );
 
     in
     {
@@ -612,13 +769,16 @@
           '';
         };
       }
-      // extraOptions;
+      // extraOptions
+      // progDecl;
 
-      config =
-        lib.mkIf cfg.enable {
+      config = lib.mkIf cfg.enable (
+        {
           programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) cfge.shellAliases;
 
           environment.etc = darwinFiles;
+
+          environment.variables = lib.mapAttrs (_: lib.mkDefault) envVarsFromInteractive;
 
           environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
 
@@ -627,6 +787,7 @@
             "${cfg.package}/bin/${name}"
           ];
         }
-        // extraConfig;
+        // extraConfig
+      );
     };
 }
