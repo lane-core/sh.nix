@@ -17,24 +17,25 @@
 # initFiles schema:
 #   {
 #     profile = {
-#       nixos       = null;                     # null → don't write file on NixOS
-#       homeManager = { homePath = ".profile"; };
-#       darwin      = { etcName = "profile"; };
-#       when        = "login";                  # "always" | "login" | "interactive"
-#       envVar      = null;                     # if set, login file exports this var
+#       etcName  = "profile";      # basename in /etc  (omit → no system-wide file)
+#       homePath = ".profile";     # basename in ~     (omit → no home-manager file)
+#       when     = "login";        # "always" | "login" | "interactive"
+#       envVar   = null;           # if set, login file exports this var
 #     };
 #     rc = {
-#       nixos       = { etcName = "kshrc"; };
-#       homeManager = { homePath = ".kshrc"; };
-#       darwin      = { etcName = "kshrc"; };
-#       when        = "interactive";
-#       envVar      = "ENV";    # login file will export ENV pointing to this file
+#       etcName  = "kshrc";
+#       homePath = ".kshrc";
+#       when     = "interactive";
+#       envVar   = "ENV";          # login file will export ENV pointing to this file
 #     };
 #   }
 #
-# When nixos is null for a login file but an interactive file has envVar,
-# the NixOS module sets environment.variables.${envVar} globally so the
-# shell picks up the interactive file without writing a conflicting login file.
+# Platform handling is fully internal:
+#   • NixOS     — writes /etc/${etcName} directly, except /etc/profile which is
+#                 merged into the shared file managed by programs.bash.
+#   • nix-darwin — writes /etc/${etcName}; for /etc/profile includes
+#                 knownSha256Hashes so activation can back up the stock file.
+#   • home-manager — writes ~/${homePath}.
 
 {
   name,
@@ -126,16 +127,14 @@ in
       progDecl = mkProgrammableOptionsDecl lib;
       progCode = mkProgrammableCode lib cfg;
 
-      # Files that actually get written on NixOS (nixos != null).
-      nixosFiles = lib.filterAttrs (_: f: f.nixos or null != null) initFiles;
+      # Files that get a system-wide /etc entry on NixOS.
+      nixosFiles = lib.filterAttrs (_: f: f ? etcName) initFiles;
 
-      loginFileDef = lib.findFirst (f: f.when == "login") null (lib.attrValues nixosFiles);
+      # Login file used for guard variables and done markers.
+      loginFileDef = lib.findFirst (f: f.when == "login" && f ? etcName) null (lib.attrValues initFiles);
 
       doneVarName =
-        if loginFileDef != null && loginFileDef.nixos ? etcName then
-          "__ETC_${upper loginFileDef.nixos.etcName}_DONE"
-        else
-          "__ETC_PROFILE_DONE";
+        if loginFileDef != null then "__ETC_${upper loginFileDef.etcName}_DONE" else "__ETC_PROFILE_DONE";
 
       aliasesStr = sh.mkAliases cfg.shellAliases;
 
@@ -146,7 +145,7 @@ in
       mkSystemFile =
         fileName: fileDef:
         let
-          etcName = fileDef.nixos.etcName;
+          etcName = fileDef.etcName;
           guardVar = "__ETC_${upper etcName}_SOURCED";
           noSysVar = "NOSYS${upper name}";
 
@@ -166,7 +165,7 @@ in
                 ${lib.optionalString (loginFileDef != null) ''
                   # If the login file was not loaded in a parent process, source it.
                   if [ -z "${doneVarName}" ]; then
-                      . /etc/${loginFileDef.nixos.etcName}
+                      . /etc/${loginFileDef.etcName}
                   fi
                 ''}
                 # We are not always an interactive shell.
@@ -195,9 +194,9 @@ in
           envVarSetup =
             if fileDef.when == "login" then
               let
-                mkExport = _: f: ''export ${f.envVar}="/etc/${f.nixos.etcName}"'';
+                mkExport = _: f: if f ? etcName then ''export ${f.envVar}="/etc/${f.etcName}"'' else "";
               in
-              lib.concatStringsSep "\n" (lib.mapAttrsToList mkExport envTargets)
+              lib.concatStringsSep "\n" (lib.filter (s: s != "") (lib.mapAttrsToList mkExport envTargets))
             else
               "";
 
@@ -243,13 +242,35 @@ in
           };
         };
 
-      systemFiles = lib.mapAttrs' mkSystemFile nixosFiles;
+      # On NixOS /etc/profile is owned by programs.bash; writing it directly
+      # would conflict.  Filter it out — its content is merged instead.
+      nixosFilesToWrite = lib.filterAttrs (_: f: f.etcName != "profile") nixosFiles;
+
+      systemFiles = lib.mapAttrs' mkSystemFile nixosFilesToWrite;
+
+      # Content appended to the shared /etc/profile via mkAfter.
+      profileMerge =
+        let
+          loginProfile = lib.findFirst (f: f.when == "login" && f ? etcName && f.etcName == "profile") null (
+            lib.attrValues initFiles
+          );
+        in
+        lib.optionalString (loginProfile != null) ''
+          # Set up environment.
+          if [ -z "$__NIXOS_SET_ENVIRONMENT_DONE" ]; then
+              . ${config.system.build.setEnvironment}
+          fi
+
+          ${progCode.shellInit or ""}${cfg.shellInit}
+          ${progCode.loginShellInit or ""}${cfg.loginShellInit}
+          ${rcSourceForLogin}
+        '';
 
       # Source interactive init files from login files (standard POSIX practice).
       rcSourceForLogin =
         let
           interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") nixosFiles;
-          mkSource = _: f: ''[ -r "/etc/${f.nixos.etcName}" ] && . "/etc/${f.nixos.etcName}"'';
+          mkSource = _: f: ''[ -r "/etc/${f.etcName}" ] && . "/etc/${f.etcName}"'';
         in
         if interactiveFiles == { } then
           ""
@@ -262,12 +283,11 @@ in
             esac
           '';
 
-      # If we didn't write a login file on NixOS but there are interactive
-      # files with envVar(s), set them globally so the shell picks them up
-      # via setEnvironment (which bash's /etc/profile already sources).
+      # If there are interactive files with envVar(s), set them globally so
+      # the shell picks them up via setEnvironment.
       envVarsFromInteractive = lib.mapAttrs' (_: f: {
         name = f.envVar;
-        value = "/etc/${f.nixos.etcName}";
+        value = "/etc/${f.etcName}";
       }) (lib.filterAttrs (_: f: f.envVar != null && f.when == "interactive") nixosFiles);
 
     in
@@ -336,7 +356,13 @@ in
         {
           programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) cfge.shellAliases;
 
-          environment.etc = systemFiles;
+          environment.etc =
+            systemFiles
+            // lib.optionalAttrs (profileMerge != "") {
+              profile = {
+                text = lib.mkAfter profileMerge;
+              };
+            };
 
           environment.variables = lib.mapAttrs (_: lib.mkDefault) envVarsFromInteractive;
 
@@ -371,17 +397,23 @@ in
 
       aliasesStr = sh.mkAliases cfg.shellAliases;
 
+      # Files that get a home-manager entry.
+      hmFiles = lib.filterAttrs (_: f: f ? homePath) initFiles;
+
+      # Login file used for guard variables.
+      loginFileDef = lib.findFirst (f: f.when == "login" && f ? homePath) null (lib.attrValues initFiles);
+
       # Files that have an envVar (the login file will export these).
       envTargets = lib.filterAttrs (_: f: f.envVar != null) initFiles;
 
       # Source interactive init files from login files (standard POSIX practice).
       rcSourceForLogin =
         let
-          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") initFiles;
+          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") hmFiles;
           mkSource =
             _: f:
             let
-              hp = "${config.home.homeDirectory}/${f.homeManager.homePath}";
+              hp = "${config.home.homeDirectory}/${f.homePath}";
             in
             ''[ -r "${hp}" ] && . "${hp}"'';
         in
@@ -400,7 +432,7 @@ in
       mkUserFile =
         fileName: fileDef:
         let
-          homePath = fileDef.homeManager.homePath;
+          homePath = fileDef.homePath;
           guardVar = "__HM_${upper name}_${upper (lib.replaceStrings [ "." ] [ "_" ] homePath)}_SOURCED";
 
           contentForWhen =
@@ -438,9 +470,11 @@ in
           envVarSetup =
             if fileDef.when == "login" then
               let
-                mkExport = _: f: ''export ${f.envVar}="${config.home.homeDirectory}/${f.homeManager.homePath}"'';
+                mkExport =
+                  _: f:
+                  if f ? homePath then ''export ${f.envVar}="${config.home.homeDirectory}/${f.homePath}"'' else "";
               in
-              lib.concatStringsSep "\n" (lib.mapAttrsToList mkExport envTargets)
+              lib.concatStringsSep "\n" (lib.filter (s: s != "") (lib.mapAttrsToList mkExport envTargets))
             else
               "";
 
@@ -463,7 +497,7 @@ in
           };
         };
 
-      userFiles = lib.mapAttrs' mkUserFile initFiles;
+      userFiles = lib.mapAttrs' mkUserFile hmFiles;
 
       integrationOptionName = "enable${
         lib.toUpper (lib.substring 0 1 name + lib.substring 1 (-1) name)
@@ -573,15 +607,13 @@ in
       progDecl = mkProgrammableOptionsDecl lib;
       progCode = mkProgrammableCode lib cfg;
 
-      loginFileDef = lib.findFirst (f: f.when == "login") null (
-        lib.attrValues (lib.filterAttrs (_: f: f.darwin or null != null) initFiles)
-      );
+      # Files that get a system-wide /etc entry on nix-darwin.
+      darwinFilesDef = lib.filterAttrs (_: f: f ? etcName) initFiles;
+
+      loginFileDef = lib.findFirst (f: f.when == "login" && f ? etcName) null (lib.attrValues initFiles);
 
       doneVarName =
-        if loginFileDef != null && loginFileDef.darwin ? etcName then
-          "__ETC_${upper loginFileDef.darwin.etcName}_DONE"
-        else
-          "__ETC_PROFILE_DONE";
+        if loginFileDef != null then "__ETC_${upper loginFileDef.etcName}_DONE" else "__ETC_PROFILE_DONE";
 
       aliasesStr = sh.mkAliases cfg.shellAliases;
 
@@ -590,7 +622,7 @@ in
       mkDarwinFile =
         fileName: fileDef:
         let
-          etcName = fileDef.darwin.etcName;
+          etcName = fileDef.etcName;
           guardVar = "__ETC_${upper etcName}_SOURCED";
 
           contentForWhen =
@@ -608,7 +640,7 @@ in
               ''
                 ${lib.optionalString (loginFileDef != null) ''
                   if [ -z "${doneVarName}" ]; then
-                      . /etc/${loginFileDef.darwin.etcName}
+                      . /etc/${loginFileDef.etcName}
                   fi
                 ''}
                 if [ -n "$PS1" ]; then
@@ -634,9 +666,9 @@ in
           envVarSetup =
             if fileDef.when == "login" then
               let
-                mkExport = _: f: ''export ${f.envVar}="/etc/${f.darwin.etcName}"'';
+                mkExport = _: f: if f ? etcName then ''export ${f.envVar}="/etc/${f.etcName}"'' else "";
               in
-              lib.concatStringsSep "\n" (lib.mapAttrsToList mkExport envTargets)
+              lib.concatStringsSep "\n" (lib.filter (s: s != "") (lib.mapAttrsToList mkExport envTargets))
             else
               "";
 
@@ -672,14 +704,20 @@ in
                   . ${filePath}.local
               fi
             '';
+          }
+          // lib.optionalAttrs (etcName == "profile") {
+            knownSha256Hashes = [
+              # macOS stock /etc/profile (Big Sur through Sequoia)
+              "a3fe9f414586c0d3cacbe3b6920a09d8718e503bca22e23fef882203bf765065"
+            ];
           };
         };
 
       # Source interactive init files from login files (standard POSIX practice).
       rcSourceForLogin =
         let
-          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") initFiles;
-          mkSource = _: f: ''[ -r "/etc/${f.darwin.etcName}" ] && . "/etc/${f.darwin.etcName}"'';
+          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") darwinFilesDef;
+          mkSource = _: f: ''[ -r "/etc/${f.etcName}" ] && . "/etc/${f.etcName}"'';
         in
         if interactiveFiles == { } then
           ""
@@ -692,23 +730,14 @@ in
             esac
           '';
 
-      darwinFiles = lib.mapAttrs' mkDarwinFile (
-        lib.filterAttrs (_: f: f.darwin or null != null) initFiles
-      );
+      darwinFiles = lib.mapAttrs' mkDarwinFile darwinFilesDef;
 
-      # If we didn't write a login file on darwin but there are interactive
-      # files with envVar(s), set them globally so the shell picks them up.
-      envVarsFromInteractive =
-        lib.mapAttrs'
-          (_: f: {
-            name = f.envVar;
-            value = "/etc/${f.darwin.etcName}";
-          })
-          (
-            lib.filterAttrs (
-              _: f: f.envVar != null && f.when == "interactive" && f.darwin or null != null
-            ) initFiles
-          );
+      # If there are interactive files with envVar(s), set them globally so
+      # the shell picks them up.
+      envVarsFromInteractive = lib.mapAttrs' (_: f: {
+        name = f.envVar;
+        value = "/etc/${f.etcName}";
+      }) (lib.filterAttrs (_: f: f.envVar != null && f.when == "interactive") darwinFilesDef);
 
     in
     {

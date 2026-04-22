@@ -17,30 +17,17 @@ let
 
     initFiles = {
       profile = {
-        # Don't write /etc/profile on NixOS — bash already manages it.
-        nixos = null;
-        homeManager = {
-          homePath = ".profile";
-        };
-        darwin = {
-          etcName = "profile";
-        };
+        etcName = "profile";
+        homePath = ".profile";
         when = "login";
         envVar = null;
       };
 
       rc = {
-        nixos = {
-          etcName = "kshrc";
-        };
-        homeManager = {
-          homePath = ".kshrc";
-        };
-        darwin = {
-          etcName = "kshrc";
-        };
+        etcName = "kshrc";
+        homePath = ".kshrc";
         when = "interactive";
-        envVar = "ENV"; # login file will export ENV=/etc/kshrc
+        envVar = "ENV"; # login file will export ENV pointing to the rc file
       };
     };
 
