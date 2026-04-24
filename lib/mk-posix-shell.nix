@@ -499,9 +499,6 @@ in
 
       userFiles = lib.mapAttrs' mkUserFile hmFiles;
 
-      integrationOptionName = "enable${
-        lib.toUpper (lib.substring 0 1 name + lib.substring 1 (-1) name)
-      }Integration";
     in
     {
       options = {
@@ -565,15 +562,6 @@ in
         }
         // extraOptions
         // progDecl;
-
-        home.shell.${integrationOptionName} = lib.mkOption {
-          type = lib.types.bool;
-          default = config.home.shell.enableShellIntegration or true;
-          example = false;
-          description = ''
-            Whether to globally enable ${name} shell integration.
-          '';
-        };
       };
 
       config = lib.mkIf cfg.enable (

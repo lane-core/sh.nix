@@ -157,7 +157,7 @@ Each module exposes the same base options as `programs.bash`:
 | `programs.<name>.promptInit` | `lines` | Prompt configuration |
 | `programs.<name>.logoutExtra` | `lines` | Run on logout |
 
-Plus `home.shell.enable<Name>Integration` (e.g., `home.shell.enableKshIntegration`) for home-manager modules.
+Note: home-manager does not provide per-shell integration helpers for POSIX shells outside bash/zsh/fish. Tool integrations (direnv, starship, fzf, etc.) must be configured manually via `programs.<name>.interactiveShellInit`.
 
 ## Adding shell-specific options
 
@@ -246,7 +246,6 @@ For each platform, the builder generates:
 - `home.file.<homePath>.text` with idempotency guards
 - Sources `config.home.sessionVariablesPackage`
 - Exports `ENV` variables from login files
-- Adds `home.shell.enable<Name>Integration` toggle
 
 **nix-darwin**:
 - `environment.etc.<etcName>.text` (same semantics as NixOS)
