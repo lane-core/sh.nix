@@ -943,13 +943,18 @@ config = lib.mkIf cfg.enable {
 For tools that need init scripts (not just aliases):
 
 ```nix
-# From programs/atuin.nix (simplified)
+# Source: modules/programs/atuin.nix
 programs.bash.initExtra = mkIf cfg.enableBashIntegration ''
-  eval "$(atuin init bash)"
+  if [[ :$SHELLOPTS: =~ :(vi|emacs): ]]; then
+    source "${pkgs.bash-preexec}/share/bash/bash-preexec.sh"
+    eval "$(${lib.getExe cfg.package} init bash ${flagsStr})"
+  fi
 '';
 
 programs.zsh.initContent = mkIf cfg.enableZshIntegration ''
-  eval "$(atuin init zsh)"
+  if [[ $options[zle] = on ]]; then
+    eval "$(${lib.getExe cfg.package} init zsh ${flagsStr})"
+  fi
 '';
 ```
 
