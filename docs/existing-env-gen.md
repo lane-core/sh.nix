@@ -15,12 +15,16 @@ for arbitrary POSIX shells.
   - [How shell modules consume both](#3-how-shell-modules-consume-both)
   - [Default accumulated values](#4-default-accumulated-values)
 - [Bash](#bash)
-  - [NixOS](#nixos)
-  - [nix-darwin](#nix-darwin)
+  - [File Layout](#file-layout)
+  - [`/etc/profile`](#etcprofile)
+  - [`/etc/bashrc`](#etcbashrc)
+  - [`/etc/bash_logout`](#etcbash_logout)
   - [Platform differences](#bash-platform-differences-summary)
 - [Zsh](#zsh)
-  - [NixOS](#nixos-1)
-  - [nix-darwin](#nix-darwin-1)
+  - [File Layout](#file-layout-1)
+  - [`/etc/zshenv`](#etczshenv)
+  - [`/etc/zprofile`](#etczprofile)
+  - [`/etc/zshrc`](#etczshrc)
   - [Platform differences](#zsh-platform-differences-summary)
 - [Home Manager](#home-manager)
   - [Shared foundation: `hm-session-vars.sh`](#shared-foundation-hm-session-varssh)
@@ -140,12 +144,30 @@ On NixOS, `environment.shellInit` appears in `/etc/profile` (via bash) and
 
 ### 2. Standalone bootstrap: `system.build.setEnvironment`
 
-This is a single shell script generated once per system configuration:
+This is a single shell script generated once per system configuration. It is
+sourced by shell init files, gated by a platform-specific guard variable so
+it only runs once per shell process.
 
 | Platform | Output path | Guard variable |
 |----------|------------|----------------|
 | NixOS | `config.system.build.setEnvironment` | `__NIXOS_SET_ENVIRONMENT_DONE` |
 | nix-darwin | `config.system.build.setEnvironment` | `__NIX_DARWIN_SET_ENVIRONMENT_DONE` |
+
+**Where `setEnvironment` is sourced:**
+
+| Shell | Platform | Sourced in | How |
+|-------|----------|-----------|-----|
+| Bash | NixOS | `/etc/profile` | `. ${config.system.build.setEnvironment}` |
+| Bash | nix-darwin | `/etc/bashrc` | `. ${config.system.build.setEnvironment}` |
+| Zsh | NixOS | `/etc/zshenv` | `. ${config.system.build.setEnvironment}` |
+| Zsh | nix-darwin | `/etc/zshenv` | `. ${config.system.build.setEnvironment}` (inside `[[ -o rcs ]]`) |
+
+The guard pattern is always:
+```sh
+if [ -z "$__<PLATFORM>_SET_ENVIRONMENT_DONE" ]; then
+    . /nix/store/...-set-environment
+fi
+```
 
 **Generation code — NixOS**
 
@@ -266,15 +288,6 @@ Each shell module does three things:
 3. **Merge `environment.shellAliases`** into its own `shellAliases` with
    `lib.mkDefault` priority.
 
-**Where each shell sources `setEnvironment`:**
-
-| Shell | Platform | File | Notes |
-|-------|----------|------|-------|
-| Bash | NixOS | `/etc/profile` | Also re-sourced by `/etc/bashrc` fallback |
-| Bash | nix-darwin | `/etc/bashrc` | Not in `/etc/profile` (stock file) |
-| Zsh | NixOS | `/etc/zshenv` | For **all** shells |
-| Zsh | nix-darwin | `/etc/zshenv` | Inside `[[ -o rcs ]]` guard |
-
 ### 4. Default accumulated values
 
 | Option | nix-darwin | NixOS |
@@ -326,11 +339,15 @@ export NIX_PROFILES="..."
 | `/etc/bashrc` | Interactive | Aliases, prompt, completion, interactive init |
 | `/etc/bash_logout` | Logout | Cleanup (reset terminal title) |
 
-### NixOS
+### `/etc/profile`
+
+The login file. On NixOS it is generated from scratch; on nix-darwin it is
+the stock macOS file.
+
+#### NixOS
 
 **Source:** `nixos/modules/programs/bash/bash.nix`
 
-**`/etc/profile`** (generated, sole source):
 ```sh
 if [ -n "$__ETC_PROFILE_SOURCED" ]; then return; fi
 __ETC_PROFILE_SOURCED=1
@@ -346,7 +363,39 @@ if [ -n "${BASH_VERSION:-}" ]; then
 fi
 ```
 
-**`/etc/bashrc`** (generated):
+**Key behaviors:**
+- `/etc/profile` is **generated from scratch**; there is no stock file.
+- `__ETC_PROFILE_DONE` is exported so non-login child shells can skip re-sourcing.
+- `/etc/profile` explicitly sources `/etc/bashrc` at the end for all bash shells.
+- `setEnvironment` is sourced here via `${cfg.shellInit}`.
+
+#### nix-darwin
+
+**Source:** Stock macOS file (preserved, not generated)
+
+```sh
+# System-wide .profile for sh(1)
+if [ -x /usr/libexec/path_helper ]; then
+    eval `/usr/libexec/path_helper -s`
+fi
+if [ "${BASH-no}" != "no" ]; then
+    [ -r /etc/bashrc ] && . /etc/bashrc
+fi
+```
+
+**Key behaviors:**
+- `/etc/profile` is **preserved**; nix-darwin only appends via the stock macOS guard.
+- `setEnvironment` is **not** sourced here — it is sourced in `/etc/bashrc` instead.
+- The bash guard `if [ "${BASH-no}" != "no" ]` bridges to `/etc/bashrc`.
+
+### `/etc/bashrc`
+
+The interactive file. Generated on both platforms.
+
+#### NixOS
+
+**Source:** `nixos/modules/programs/bash/bash.nix`
+
 ```sh
 if [ -n "$__ETC_BASHRC_SOURCED" ] || [ -n "$NOSYSBASHRC" ]; then return; fi
 __ETC_BASHRC_SOURCED=1
@@ -364,28 +413,16 @@ fi
 if test -f /etc/bashrc.local; then . /etc/bashrc.local; fi
 ```
 
-**Key NixOS behaviors:**
-- `/etc/profile` is **generated from scratch**; there is no stock file.
-- `__ETC_PROFILE_DONE` is exported so non-login child shells can skip re-sourcing.
-- `/etc/profile` explicitly sources `/etc/bashrc` at the end for all bash shells.
-- `/etc/bashrc` has a **fallback**: if `__ETC_PROFILE_DONE` is missing, it sources `/etc/profile`.
+**Key behaviors:**
+- Has a **fallback**: if `__ETC_PROFILE_DONE` is missing, it sources `/etc/profile`.
+- This fallback re-runs `setEnvironment` (guarded, so it's a no-op).
+- Interactive guard is `if [ -n "$PS1" ]`.
+- `setEnvironment` was already sourced in `/etc/profile`; not sourced again here.
 
-### nix-darwin
+#### nix-darwin
 
 **Source:** `modules/programs/bash/default.nix`
 
-**`/etc/profile`**: **NOT generated.** It is the stock macOS file:
-```sh
-# System-wide .profile for sh(1)
-if [ -x /usr/libexec/path_helper ]; then
-    eval `/usr/libexec/path_helper -s`
-fi
-if [ "${BASH-no}" != "no" ]; then
-    [ -r /etc/bashrc ] && . /etc/bashrc
-fi
-```
-
-**`/etc/bashrc`** (generated, with `knownSha256Hashes` for activation backup):
 ```sh
 [ -r "/etc/bashrc_$TERM_PROGRAM" ] && . "/etc/bashrc_$TERM_PROGRAM"
 
@@ -407,12 +444,34 @@ ${cfg.interactiveShellInit}
 if test -f /etc/bash.local; then source /etc/bash.local; fi
 ```
 
-**Key nix-darwin behaviors:**
-- `/etc/profile` is **preserved**; nix-darwin only appends via the stock macOS guard.
-- `/etc/bashrc` sources `setEnvironment` itself (unlike NixOS where it's in `/etc/profile`).
+**Key behaviors:**
+- `setEnvironment` is sourced **here**, not in `/etc/profile`.
 - Interactive guard is `[[ $- != *i* ]] && return` (not `PS1`).
 - Term-specific file `bashrc_$TERM_PROGRAM` is sourced before anything else.
 - Local file is `/etc/bash.local` (not `/etc/bashrc.local`).
+
+### `/etc/bash_logout`
+
+Only generated on NixOS.
+
+#### NixOS
+
+**Source:** `nixos/modules/programs/bash/bash.nix`
+
+```sh
+if [ -n "$__ETC_BASHLOGOUT_SOURCED" ] || [ -n "$NOSYSBASHLOGOUT" ]; then return; fi
+__ETC_BASHLOGOUT_SOURCED=1
+
+${cfg.logout}
+
+if test -f /etc/bash_logout.local; then
+    . /etc/bash_logout.local
+fi
+```
+
+#### nix-darwin
+
+Not generated.
 
 ### Bash: Platform Differences Summary
 
@@ -424,6 +483,7 @@ if test -f /etc/bash.local; then source /etc/bash.local; fi
 | Interactive guard | `if [ -n "$PS1" ]` | `[[ $- != *i* ]] && return` |
 | Term-specific file | None | `bashrc_$TERM_PROGRAM` |
 | Local file suffix | `.local` | `.local` (but path is `/etc/bash.local`) |
+| `/etc/bash_logout` | Generated | Not generated |
 
 ---
 
@@ -443,11 +503,15 @@ Zsh has a **fixed startup order** regardless of login vs interactive:
 3. `/etc/zshrc` → `~/.zshrc` (interactive only)
 4. `/etc/zlogin` → `~/.zlogin` (login only)
 
-### NixOS
+### `/etc/zshenv`
+
+The universal file (read for all shells). `setEnvironment` is sourced here
+on both platforms.
+
+#### NixOS
 
 **Source:** `nixos/modules/programs/zsh/zsh.nix`
 
-**`/etc/zshenv`** (generated):
 ```sh
 if [ -n "${__ETC_ZSHENV_SOURCED-}" ]; then return; fi
 __ETC_ZSHENV_SOURCED=1
@@ -468,7 +532,46 @@ ${cfg.shellInit}
 if test -f /etc/zshenv.local; then . /etc/zshenv.local; fi
 ```
 
-**`/etc/zprofile`** (generated):
+**Key behaviors:**
+- Sources `setEnvironment` for **all** shells (not just login).
+- Sets up `fpath` for completions.
+- Injects both `environment.shellInit` and `programs.zsh.shellInit`.
+
+#### nix-darwin
+
+**Source:** `modules/programs/zsh/default.nix`
+
+```sh
+if [ -n "${__ETC_ZSHENV_SOURCED-}" ]; then return; fi
+__ETC_ZSHENV_SOURCED=1
+
+if [[ -o rcs ]]; then
+    if [ -z "${__NIX_DARWIN_SET_ENVIRONMENT_DONE-}" ]; then
+        . ${config.system.build.setEnvironment}
+    fi
+
+    for p in ${(z)NIX_PROFILES}; do
+        fpath=($p/share/zsh/site-functions ... $fpath)
+    done
+
+    ${cfg.shellInit}
+fi
+
+if test -f /etc/zshenv.local; then source /etc/zshenv.local; fi
+```
+
+**Key behaviors:**
+- Wraps everything in `if [[ -o rcs ]]` — respects `NO_RCS`.
+- Does **not** inject `environment.shellInit` (only `programs.zsh.shellInit`).
+
+### `/etc/zprofile`
+
+The login file. Minimal on both platforms.
+
+#### NixOS
+
+**Source:** `nixos/modules/programs/zsh/zsh.nix`
+
 ```sh
 if [ -n "${__ETC_ZPROFILE_SOURCED-}" ]; then return; fi
 __ETC_ZPROFILE_SOURCED=1
@@ -479,7 +582,37 @@ ${cfg.loginShellInit}
 if test -f /etc/zprofile.local; then . /etc/zprofile.local; fi
 ```
 
-**`/etc/zshrc`** (generated):
+**Key behaviors:**
+- Minimal — just login init.
+- Does **not** include aliases.
+
+#### nix-darwin
+
+**Source:** `modules/programs/zsh/default.nix`
+
+```sh
+if [ -n "${__ETC_ZPROFILE_SOURCED-}" ]; then return; fi
+__ETC_ZPROFILE_SOURCED=1
+
+${zshVariables}
+${config.system.build.setAliases.text}
+${cfg.loginShellInit}
+
+if test -f /etc/zprofile.local; then source /etc/zprofile.local; fi
+```
+
+**Key behaviors:**
+- Includes `${config.system.build.setAliases.text}` (not in NixOS zprofile).
+- Has `knownSha256Hashes` for activation backup.
+
+### `/etc/zshrc`
+
+The interactive file.
+
+#### NixOS
+
+**Source:** `nixos/modules/programs/zsh/zsh.nix`
+
 ```sh
 if [ -n "$__ETC_ZSHRC_SOURCED" -o -n "$NOSYSZSHRC" ]; then return; fi
 __ETC_ZSHRC_SOURCED=1
@@ -505,50 +638,14 @@ ${cfg.promptInit}
 if test -f /etc/zshrc.local; then . /etc/zshrc.local; fi
 ```
 
-**Key NixOS behaviors:**
-- `zshenv` sources `setEnvironment` for **all** shells (not just login).
-- `zshenv` sets up `fpath` for completions.
-- `zprofile` is minimal — just login init.
-- `zshrc` sets history options, compinit, dircolors, aliases, prompt.
+**Key behaviors:**
+- Sets history options, compinit, dircolors, aliases, prompt.
 - No re-sourcing guard between `zprofile` and `zshrc` — zsh's startup order handles that.
 
-### nix-darwin
+#### nix-darwin
 
 **Source:** `modules/programs/zsh/default.nix`
 
-**`/etc/zshenv`** (generated, with `knownSha256Hashes`):
-```sh
-if [ -n "${__ETC_ZSHENV_SOURCED-}" ]; then return; fi
-__ETC_ZSHENV_SOURCED=1
-
-if [[ -o rcs ]]; then
-    if [ -z "${__NIX_DARWIN_SET_ENVIRONMENT_DONE-}" ]; then
-        . ${config.system.build.setEnvironment}
-    fi
-
-    for p in ${(z)NIX_PROFILES}; do
-        fpath=($p/share/zsh/site-functions ... $fpath)
-    done
-
-    ${cfg.shellInit}
-fi
-
-if test -f /etc/zshenv.local; then source /etc/zshenv.local; fi
-```
-
-**`/etc/zprofile`** (generated, with `knownSha256Hashes`):
-```sh
-if [ -n "${__ETC_ZPROFILE_SOURCED-}" ]; then return; fi
-__ETC_ZPROFILE_SOURCED=1
-
-${zshVariables}
-${config.system.build.setAliases.text}
-${cfg.loginShellInit}
-
-if test -f /etc/zprofile.local; then source /etc/zprofile.local; fi
-```
-
-**`/etc/zshrc`** (generated, with `knownSha256Hashes`):
 ```sh
 if [ -n "$__ETC_ZSHRC_SOURCED" -o -n "$NOSYSZSHRC" ]; then return; fi
 __ETC_ZSHRC_SOURCED=1
@@ -571,18 +668,17 @@ autoload -U bashcompinit && bashcompinit
 if test -f /etc/zshrc.local; then source /etc/zshrc.local; fi
 ```
 
-**Key nix-darwin behaviors:**
-- `zshenv` wraps everything in `if [[ -o rcs ]]` — respects `NO_RCS`.
-- `zprofile` includes `${config.system.build.setAliases.text}` (not in NixOS zprofile).
-- `zshrc` has plugins (autosuggestions, syntax-highlighting, fzf) that NixOS handles elsewhere.
-- `bindkey -e` is set in `zshrc` (NixOS does not set this in the generated file).
-- All three files have `knownSha256Hashes` because macOS may have stock versions.
+**Key behaviors:**
+- Has plugins (autosuggestions, syntax-highlighting, fzf) that NixOS handles elsewhere.
+- `bindkey -e` is set (NixOS does not set this in the generated file).
+- Has `knownSha256Hashes` for activation backup.
 
 ### Zsh: Platform Differences Summary
 
 | Aspect | NixOS | nix-darwin |
 |--------|-------|-----------|
 | `zshenv` `rcs` guard | No | `if [[ -o rcs ]]` |
+| `zshenv` `environment.shellInit` | Injected | Not injected |
 | `zprofile` aliases | Not included | `${config.system.build.setAliases.text}` |
 | `zshrc` plugins | None in module | autosuggestions, syntax-highlighting, fzf |
 | `zshrc` keymap | Not set | `bindkey -e` |
