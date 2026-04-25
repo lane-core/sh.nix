@@ -397,36 +397,42 @@ in
 
       aliasesStr = sh.mkAliases cfg.shellAliases;
 
-      # Files that get a home-manager entry.
-      hmFiles = lib.filterAttrs (_: f: f ? homePath) initFiles;
+      # Interactive files that get a home-manager entry (login files are
+      # handled by appending to the shared ~/.profile via mkAfter).
+      hmFiles = lib.filterAttrs (_: f: f ? homePath && f.when != "login") initFiles;
 
-      # Login file used for guard variables.
-      loginFileDef = lib.findFirst (f: f.when == "login" && f ? homePath) null (lib.attrValues initFiles);
+      # Interactive file definitions for login shell sourcing.
+      interactiveHmFiles = lib.filterAttrs (_: f: f.when == "interactive") hmFiles;
 
-      # Files that have an envVar (the login file will export these).
-      envTargets = lib.filterAttrs (_: f: f.envVar != null) initFiles;
-
-      # Source interactive init files from login files (standard POSIX practice).
-      rcSourceForLogin =
+      # Build the ~/.profile appendix: export ENV and source ~/.<sh>rc.
+      profileAppendix =
         let
-          interactiveFiles = lib.filterAttrs (_: f: f.when == "interactive") hmFiles;
-          mkSource =
-            _: f:
-            let
-              hp = "${config.home.homeDirectory}/${f.homePath}";
-            in
-            ''[ -r "${hp}" ] && . "${hp}"'';
+          envExports = lib.concatStringsSep "\n" (
+            lib.mapAttrsToList (
+              _: f:
+              lib.optionalString (f ? homePath && f.envVar != null) ''
+                export ${f.envVar}="${config.home.homeDirectory}/${f.homePath}"
+              ''
+            ) interactiveHmFiles
+          );
+          rcSources = lib.concatStringsSep "\n" (
+            lib.mapAttrsToList (
+              _: f:
+              lib.optionalString (f ? homePath) ''
+                [ -r "${config.home.homeDirectory}/${f.homePath}" ] && . "${config.home.homeDirectory}/${f.homePath}"
+              ''
+            ) interactiveHmFiles
+          );
         in
-        if interactiveFiles == { } then
-          ""
-        else
-          ''
-            # Source interactive init files for login shells.
-            case $- in *i*)
-                ${lib.concatStringsSep "\n    " (lib.mapAttrsToList mkSource interactiveFiles)}
-                ;;
-            esac
-          '';
+        lib.optionalString (interactiveHmFiles != { }) ''
+          set -u
+          # ${name} shell configuration.
+          ${envExports}
+          case $- in *i*)
+              ${rcSources}
+              ;;
+          esac
+        '';
 
       # Generate a single user init file.
       mkUserFile =
@@ -440,12 +446,6 @@ in
               ''
                 ${progCode.shellInit or ""}${cfg.shellInit}
               ''
-            else if fileDef.when == "login" then
-              ''
-                ${progCode.shellInit or ""}${cfg.shellInit}
-                ${progCode.loginShellInit or ""}${cfg.loginShellInit}
-                ${rcSourceForLogin}
-              ''
             else if fileDef.when == "interactive" then
               ''
                 # Only execute for interactive shells.
@@ -458,26 +458,6 @@ in
             else
               throw "mkPosixShellModule: unknown 'when' value '${fileDef.when}' for file '${fileName}'";
 
-          sessionVars =
-            if fileDef.when == "login" then
-              ''
-                . "${config.home.sessionVariablesPackage}/etc/profile.d/hm-session-vars.sh"
-              ''
-            else
-              "";
-
-          # Login file exports envVar(s) pointing to their target files.
-          envVarSetup =
-            if fileDef.when == "login" then
-              let
-                mkExport =
-                  _: f:
-                  if f ? homePath then ''export ${f.envVar}="${config.home.homeDirectory}/${f.homePath}"'' else "";
-              in
-              lib.concatStringsSep "\n" (lib.filter (s: s != "") (lib.mapAttrsToList mkExport envTargets))
-            else
-              "";
-
           guard = ''
             if [ -n "''$${guardVar}" ]; then return; fi
             ${guardVar}=1
@@ -488,8 +468,6 @@ in
           value = {
             text = ''
               ${guard}
-              ${sessionVars}
-              ${envVarSetup}
               ${contentForWhen}
 
               ${cfg.${fileName + "Extra"} or ""}
@@ -565,14 +543,25 @@ in
       };
 
       config = lib.mkIf cfg.enable (
-        {
-          programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) config.home.shellAliases;
+        lib.mkMerge [
+          {
+            programs.${name}.shellAliases = lib.mapAttrs (name: lib.mkDefault) config.home.shellAliases;
 
-          home.file = userFiles;
+            home.file = userFiles;
 
-          home.packages = lib.optional (cfg.package != null) cfg.package;
-        }
-        // extraConfig
+            home.packages = lib.optional (cfg.package != null) cfg.package;
+          }
+          (lib.optionalAttrs (interactiveHmFiles != { }) {
+            home.file.".profile".text = lib.mkBefore ''
+              set +u
+
+            '';
+          })
+          (lib.optionalAttrs (interactiveHmFiles != { }) {
+            home.file.".profile".text = lib.mkAfter profileAppendix;
+          })
+          extraConfig
+        ]
       );
     };
 
