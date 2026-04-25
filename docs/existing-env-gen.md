@@ -32,7 +32,6 @@ for arbitrary POSIX shells.
   - [Zsh](#zsh-1)
   - [Bash vs Zsh: key differences](#bash-vs-zsh-in-home-manager-key-differences)
   - [Shell integration mechanism (`enable*Integration`)](#shell-integration-mechanism-enableintegration)
-- [Implications for `sh.nix`](#implications-for-shnix)
 
 ---
 
@@ -958,68 +957,9 @@ programs.zsh.initContent = mkIf cfg.enableZshIntegration ''
 '';
 ```
 
-**For ksh**, a program module using sh.nix would look like:
-
-```nix
-# Hypothetical: programs/atuin.nix with ksh support
-programs.ksh.interactiveShellInit = mkIf cfg.enableKshIntegration ''
-  eval "$(atuin init ksh)"
-'';
-```
-
 **Key observations:**
 - The integration flag controls **which shell's init file** gets the hook.
 - Aliases go into `programs.<shell>.shellAliases` (merged by the shell module).
 - Init scripts go into `programs.<shell>.initExtra` / `initContent` / `interactiveShellInit`.
-- The shell module (bash, zsh, or sh.nix) is responsible for merging these
-  fragments into the final generated file.
-
----
-
-## Implications for `sh.nix`
-
-### What we should borrow
-
-1. **Guard pattern**: `__ETC_${NAME}_SOURCED` + `NOSYS${NAME}` is battle-tested.
-2. **Environment bootstrap**: Source `setEnvironment` early, gate on platform variable.
-3. **Local file hook**: Always end with `/etc/<file>.local`.
-4. **Interactive gating**: Bash uses `PS1` or `$-`; zsh doesn't need one because `zshrc` is inherently interactive-only.
-
-### What we should be careful about
-
-1. **POSIX shell `$-`**: Unlike bash's `[[ $- != *i* ]]`, POSIX shells should use `case $- in *i*) ... ;; esac`.
-2. **`/etc/profile` on nix-darwin**: Must not overwrite stock macOS file. Append-only (via `knownSha256Hashes` or merging).
-3. **No `PS1` gate in `$ENV` file**: ksh's `$ENV` file runs for all interactive shells; use `case $-` or guard with a sourced-once variable.
-4. **No shell-specific syntax**: Aliases should use `alias --` (bash/ksh compatible), not zsh arrays or bash arrays.
-
-### Home-manager module design
-
-1. **Source `hm-session-vars.sh` from the login file** (like bash), not from
-   the `$ENV` file (which would be the zsh `zshenv` equivalent). ksh's `$ENV`
-   runs for all interactive shells, but `hm-session-vars.sh` should only be
-   sourced once per session — the login file is the right place.
-
-2. **Use a shared `~/.profile`** that is POSIX-compatible, like bash does.
-   ksh can source the same `~/.profile` that bash generates.
-
-3. **Do NOT generate a dedicated user login file** (like `~/.ksh_profile`).
-   ksh has no such dedicated file — it only uses `~/.profile`.
-
-4. **Bridge from `~/.profile` to `~/.kshrc`** for interactive login shells,
-   using `case $- in *i*) ... esac`.
-
-5. **Export `ENV` from `~/.profile`** so non-login interactive shells
-   (e.g., `ksh` launched from an existing shell) still get `~/.kshrc`.
-
-6. **Support `enableKshIntegration`** by providing
-   `lib.hm.shell.mkKshIntegrationOption` in the home-manager lib, so program
-   modules can follow the same pattern for ksh as they do for bash and zsh.
-
-### What `sh.nix` currently does wrong
-
-| Issue | Current behavior | What bash/zsh do |
-|-------|---------------|----------------|
-| `/etc/profile` on nix-darwin | Overwrites with full generated file | Stock file preserved; append only |
-| Interactive gate | `if [ -n "$PS1" ]` inside `/etc/kshrc` | bash: `[[ $- != *i* ]]`; zsh: no gate needed |
-| `/etc/kshrc` sources `/etc/profile` | Checks broken `doneVarName` literal | bash: checks `$__ETC_PROFILE_DONE` |
-| `envSetup` in interactive file | Sources `setEnvironment` in `/etc/kshrc` | bash (NixOS): in `/etc/profile`; bash (darwin): in `/etc/bashrc`; zsh: in `zshenv` |
+- The shell module (bash or zsh) is responsible for merging these fragments
+  into the final generated file.
