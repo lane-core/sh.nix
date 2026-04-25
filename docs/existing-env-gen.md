@@ -43,15 +43,29 @@ For the full upstream source behind each pattern, see the
 
 ### 1. Guard Variables
 Every generated system-wide init file starts with a guard to prevent
-double-sourcing:
+double-sourcing. All files use `__ETC_<FILE>_SOURCED`; some also include a
+`NOSYS*` escape hatch:
 
 ```sh
+# Universal pattern (all files)
+if [ -n "$__ETC_<FILE>_SOURCED" ]; then return; fi
+__ETC_<FILE>_SOURCED=1
+
+# With NOSYS escape (interactive and logout files only)
 if [ -n "$__ETC_<FILE>_SOURCED" ] || [ -n "$NOSYS<SHELL>" ]; then return; fi
 __ETC_<FILE>_SOURCED=1
 ```
 
-Both bash and zsh use this exact pattern. The `NOSYS*` variable allows users
-to skip system-wide initialization entirely.
+| File | `__ETC_*_SOURCED` | `NOSYS*` |
+|------|-------------------|----------|
+| `/etc/profile` (NixOS) | ✅ | ❌ |
+| `/etc/bashrc` (both) | ✅ | ✅ `NOSYSBASHRC` |
+| `/etc/bash_logout` (NixOS) | ✅ | ✅ `NOSYSBASHLOGOUT` |
+| `/etc/zshenv` (both) | ✅ | ❌ |
+| `/etc/zprofile` (both) | ✅ | ❌ |
+| `/etc/zshrc` (both) | ✅ | ✅ `NOSYSZSHRC` |
+
+The `NOSYS*` escape hatch only exists on interactive and logout files.
 
 ### 2. Environment Bootstrap
 Both shells ensure `setEnvironment` is sourced before anything else:
@@ -294,7 +308,7 @@ Each shell module does three things:
 | `shellInit` | `""` (declared but **never injected**) | `""` (injected into `/etc/profile` via bash, `/etc/zshenv` via zsh) |
 | `loginShellInit` | `""` (declared but **never injected**) | `""` (injected into `/etc/profile` via bash, `/etc/zprofile` via zsh) |
 | `interactiveShellInit` | `""` (nix-index when enabled) | `""` (nix-index or similar when enabled) |
-| `shellAliases` | None | `ls`, `ll`, `l` with `mkDefault` |
+| `shellAliases` | None | `ls`, `ll`, `l` with `mkDefault` (when `environment.shell.enable = true`) |
 | `variables` | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS`, `EDITOR`, `PAGER` | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS`, plus `sessionVariables` |
 | `extraInit` | `NIX_USER_PROFILE_DIR`, `NIX_PROFILES` | `NIX_USER_PROFILE_DIR`, `NIX_PROFILES` |
 | `systemPath` | profiles + `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | profiles + `~/bin` (if enabled) + `~/.local/bin` (if enabled) |
@@ -417,6 +431,17 @@ if test -f /etc/bashrc.local; then . /etc/bashrc.local; fi
 - This fallback re-runs `setEnvironment` (guarded, so it's a no-op).
 - Interactive guard is `if [ -n "$PS1" ]`.
 - `setEnvironment` was already sourced in `/etc/profile`; not sourced again here.
+  - `${cfg.interactiveShellInit}` expands to the NixOS bash module's default:
+    ```sh
+    # Disable hashing (i.e. caching) of command lookups.
+    set +h
+
+    ${cfg.promptInit}
+    ${cfg.promptPluginInit}
+    ${bashAliases}
+
+    ${cfge.interactiveShellInit}   # ← environment.interactiveShellInit
+    ```
 
 #### nix-darwin
 
@@ -482,6 +507,7 @@ Not generated.
 | Interactive guard | `if [ -n "$PS1" ]` | `[[ $- != *i* ]] && return` |
 | Term-specific file | None | `bashrc_$TERM_PROGRAM` |
 | Local file suffix | `.local` | `.local` (but path is `/etc/bash.local`) |
+| `knownSha256Hashes` | None | `/etc/bashrc` |
 | `/etc/bash_logout` | Generated | Not generated |
 
 ---
@@ -815,8 +841,9 @@ priorities:
 
 | Order | Content |
 |-------|---------|
-| 500 (`mkBefore`) | `typeset -U path cdpath fpath manpath` |
-| 510 | `cdpath` additions, `fpath` from `NIX_PROFILES`, `HELPDIR` |
+| 500 (`mkBefore`) | _(reserved for user early init; nothing injected by default)_ |
+| 510 | `typeset -U path cdpath fpath manpath`; `cdpath` additions (conditional) |
+| 520 | `fpath` from `NIX_PROFILES`, `HELPDIR` |
 | 530 | `bindkey` (default keymap) |
 | 540 | `localVariables` |
 | 570 | `compinit` (unless Oh-My-Zsh/Prezto) |
