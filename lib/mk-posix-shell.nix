@@ -21,25 +21,11 @@
 
 let
   pname = name;
-in
-
-{
-  nixosModule =
-    {
-      config,
-      lib,
-      pkgs,
-      ...
-    }:
-    let
-      PNAME = lib.toUpper pname;
-      cfg = config.programs.${pname};
-
-      aliasesStr = lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (k: v: "alias ${k}=${lib.escapeShellArg v}") cfg.shellAliases
-      );
-
-      ps1Value = lib.concatStrings [
+  mkPs1Line =
+    lib:
+    "PS1="
+    + lib.escapeShellArg (
+      lib.concatStrings [
         "$"
         "{"
         "USER"
@@ -55,8 +41,27 @@ in
         "PWD"
         "}"
         "$ "
-      ];
-      ps1Line = "PS1=" + lib.escapeShellArg ps1Value;
+      ]
+    );
+in
+
+{
+  nixosModule =
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
+    let
+      PNAME = lib.strings.toUpper pname;
+      cfg = config.programs.${pname};
+
+      aliasesStr = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (k: v: "alias ${k}=${lib.escapeShellArg v}") cfg.shellAliases
+      );
+
+      ps1Line = mkPs1Line lib;
     in
     {
       options.programs.${pname} = {
@@ -199,27 +204,10 @@ in
       ...
     }:
     let
-      PNAME = lib.toUpper pname;
+      PNAME = lib.strings.toUpper pname;
       cfg = config.programs.${pname};
 
-      ps1Value = lib.concatStrings [
-        "$"
-        "{"
-        "USER"
-        "}"
-        "@"
-        "$"
-        "{"
-        "HOSTNAME"
-        "}"
-        ":"
-        "$"
-        "{"
-        "PWD"
-        "}"
-        "$ "
-      ];
-      ps1Line = "PS1=" + lib.escapeShellArg ps1Value;
+      ps1Line = mkPs1Line lib;
     in
     {
       options.programs.${pname} = {
@@ -375,7 +363,7 @@ in
       ...
     }:
     let
-      PNAME = lib.toUpper pname;
+      PNAME = lib.strings.toUpper pname;
       cfg = config.programs.${pname};
 
       aliasesStr = lib.concatStringsSep "\n" (
