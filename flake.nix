@@ -5,15 +5,7 @@
 
   outputs =
     { self, nixpkgs }:
-    let
-      forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
-    in
     {
       lib = import ./lib;
-
-      # Example pre-built modules (optional — consumers usually generate their own).
-      # nixosModules.default = ...;
-      # homeManagerModules.default = ...;
-      # darwinModules.default = ...;
     };
 }
