@@ -38,6 +38,25 @@ in
       aliasesStr = lib.concatStringsSep "\n" (
         lib.mapAttrsToList (k: v: "alias ${k}=${lib.escapeShellArg v}") cfg.shellAliases
       );
+
+      ps1Value = lib.concatStrings [
+        "$"
+        "{"
+        "USER"
+        "}"
+        "@"
+        "$"
+        "{"
+        "HOSTNAME"
+        "}"
+        ":"
+        "$"
+        "{"
+        "PWD"
+        "}"
+        "$ "
+      ];
+      ps1Line = "PS1=" + lib.escapeShellArg ps1Value;
     in
     {
       options.programs.${pname} = {
@@ -111,7 +130,7 @@ in
           '';
           loginShellInit = config.environment.loginShellInit;
           interactiveShellInit = config.environment.interactiveShellInit;
-          shellAliases = lib.mapAttrs (name: lib.mkDefault) config.environment.shellAliases;
+          shellAliases = lib.mkDefault config.environment.shellAliases;
         };
 
         environment.etc.${etcRcPath}.text = ''
@@ -133,7 +152,7 @@ in
 
           # Safe defaults.
           set -o noclobber
-          PS1="''${USER}@''${HOSTNAME}:''${PWD}$ "
+          ${ps1Line}
 
           ${aliasesStr}
 
@@ -147,7 +166,7 @@ in
           [ -r "$HOME/${homeRcPath}" ] && . "$HOME/${homeRcPath}"
         '';
 
-        environment.etc."profile".text = ''
+        environment.etc."profile".text = lib.mkForce ''
           # /etc/profile: DO NOT EDIT -- this file has been generated automatically.
           # This file is read for login shells.
 
@@ -182,6 +201,25 @@ in
     let
       PNAME = lib.toUpper pname;
       cfg = config.programs.${pname};
+
+      ps1Value = lib.concatStrings [
+        "$"
+        "{"
+        "USER"
+        "}"
+        "@"
+        "$"
+        "{"
+        "HOSTNAME"
+        "}"
+        ":"
+        "$"
+        "{"
+        "PWD"
+        "}"
+        "$ "
+      ];
+      ps1Line = "PS1=" + lib.escapeShellArg ps1Value;
     in
     {
       options.programs.${pname} = {
@@ -277,7 +315,7 @@ in
 
           # Safe defaults.
           set -o noclobber
-          PS1="''${USER}@''${HOSTNAME}:''${PWD}$ "
+          ${ps1Line}
 
           . ${config.system.build.setAliases}
 
