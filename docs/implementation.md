@@ -8,9 +8,9 @@ downstream consumers.
 
 ```nix
 shnix.lib.mkPosixShellModule {
-  package = pkgs.<shell>;        # derivation whose pname names the module namespace
-  etcRcPath ? package.pname + "rc";   # system-wide rc filename (no leading /etc/)
-  homeRcPath ? "." + package.pname + "rc";  # user rc filename (with leading dot)
+  name = "ksh";              # mandatory, sets the programs.<name> namespace
+  etcRcPath ? name + "rc";   # system-wide rc filename (no leading /etc/)
+  homeRcPath ? "." + name + "rc";  # user rc filename (with leading dot)
 }
 ```
 
@@ -24,7 +24,10 @@ Returns:
 }
 ```
 
-The module namespace is `programs.${pname}` where `pname = package.pname or package.name`.
+The module namespace is `programs.${name}`.  The default package is
+`pkgs.${name}`, resolved at module-evaluation time.  Users can override
+`programs.${name}.package` to use a different variant (e.g. `ksh93` in place
+of `ksh`).
 
 ## User-Facing Options
 
@@ -33,7 +36,7 @@ All declared under `programs.${pname}`.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enable` | `bool` | `false` | Enable the shell and generate init files |
-| `package` | `package` | `package` (input) | The shell package |
+| `package` | `package` | `pkgs.${name}` | The shell package |
 | `histFile` | `str` | `"$HOME/.${pname}_history"` | History file path |
 | `histSize` | `int` | `2000` | History lines in memory |
 | `shellAliases` | `attrsOf str` | `{}` | Interactive shell aliases |

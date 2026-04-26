@@ -42,6 +42,7 @@ For the full upstream source behind each pattern, see the
 [Primer](#primer-environmentinit-and-systembuildsetenvironment) below.
 
 ### 1. Guard Variables
+
 Every generated system-wide init file starts with a guard to prevent
 double-sourcing. All files use `__ETC_<FILE>_SOURCED`; some also include a
 `NOSYS*` escape hatch:
@@ -56,26 +57,28 @@ if [ -n "$__ETC_<FILE>_SOURCED" ] || [ -n "$NOSYS<SHELL>" ]; then return; fi
 __ETC_<FILE>_SOURCED=1
 ```
 
-| File | `__ETC_*_SOURCED` | `NOSYS*` |
-|------|-------------------|----------|
-| `/etc/profile` (NixOS) | ✅ | ❌ |
-| `/etc/bashrc` (both) | ✅ | ✅ `NOSYSBASHRC` |
-| `/etc/bash_logout` (NixOS) | ✅ | ✅ `NOSYSBASHLOGOUT` |
-| `/etc/zshenv` (both) | ✅ | ❌ |
-| `/etc/zprofile` (both) | ✅ | ❌ |
-| `/etc/zshrc` (both) | ✅ | ✅ `NOSYSZSHRC` |
+| File                       | `__ETC_*_SOURCED` | `NOSYS*`             |
+| -------------------------- | ----------------- | -------------------- |
+| `/etc/profile` (NixOS)     | ✅                | ❌                   |
+| `/etc/bashrc` (both)       | ✅                | ✅ `NOSYSBASHRC`     |
+| `/etc/bash_logout` (NixOS) | ✅                | ✅ `NOSYSBASHLOGOUT` |
+| `/etc/zshenv` (both)       | ✅                | ❌                   |
+| `/etc/zprofile` (both)     | ✅                | ❌                   |
+| `/etc/zshrc` (both)        | ✅                | ✅ `NOSYSZSHRC`      |
 
 The `NOSYS*` escape hatch only exists on interactive and logout files.
 
 ### 2. Environment Bootstrap
+
 Both shells ensure `setEnvironment` is sourced before anything else:
 
-| Platform | Variable | File that sources it |
-|----------|----------|---------------------|
-| NixOS | `__NIXOS_SET_ENVIRONMENT_DONE` | Varies by shell (see below) |
+| Platform   | Variable                            | File that sources it        |
+| ---------- | ----------------------------------- | --------------------------- |
+| NixOS      | `__NIXOS_SET_ENVIRONMENT_DONE`      | Varies by shell (see below) |
 | nix-darwin | `__NIX_DARWIN_SET_ENVIRONMENT_DONE` | Varies by shell (see below) |
 
 ### 3. Local File Hook
+
 Every generated file ends with:
 
 ```sh
@@ -85,11 +88,13 @@ fi
 ```
 
 ### 4. `environment.interactiveShellInit`
+
 Both shells inject `config.environment.interactiveShellInit` into their
 interactive init files. This is where system-wide aliases and other
 interactive setup from `environment.*` options land.
 
 ### 5. `environment.shellAliases`
+
 Both bash and zsh modules merge `environment.shellAliases` into their own
 `shellAliases` option with `lib.mkDefault` priority.
 
@@ -108,11 +113,11 @@ Both NixOS and nix-darwin declare the same three options.
 **Source:** `nixos/modules/config/shells-environment.nix` and
 `modules/environment/default.nix`
 
-| Option | Type | Default | Purpose |
-|--------|------|---------|---------|
-| `environment.shellInit` | `lines` | `""` | Runs for **all** shells |
-| `environment.loginShellInit` | `lines` | `""` | Runs for **login** shells |
-| `environment.interactiveShellInit` | `lines` | `""` | Runs for **interactive** shells |
+| Option                             | Type    | Default | Purpose                         |
+| ---------------------------------- | ------- | ------- | ------------------------------- |
+| `environment.shellInit`            | `lines` | `""`    | Runs for **all** shells         |
+| `environment.loginShellInit`       | `lines` | `""`    | Runs for **login** shells       |
+| `environment.interactiveShellInit` | `lines` | `""`    | Runs for **interactive** shells |
 
 These are accumulator options. Any module can append to them:
 
@@ -146,14 +151,21 @@ defaults to `""`.
 
 `environment.interactiveShellInit` is the only one of the three that stock
 modules commonly contribute to:
+
 - NixOS: no stock modules set it by default
 - nix-darwin: `programs.nix-index` sets it when enabled
 
-**Platform caveat:** On nix-darwin, `environment.shellInit` is **declared**
-but **never injected** into any generated shell file. Only
-`environment.interactiveShellInit` is used (in `/etc/bashrc` and `/etc/zshrc`).
-On NixOS, `environment.shellInit` appears in `/etc/profile` (via bash) and
-`/etc/zshenv` (via zsh).
+**Platform caveat:** On nix-darwin, `environment.shellInit` and
+`environment.loginShellInit` are **not injected** into bash or zsh init
+files. They are only consumed by `programs.fish` (when enabled), which
+translates them into fish-compatible init scripts via babelfish/foreign-env.
+Only `environment.interactiveShellInit` is used by bash and zsh on
+nix-darwin (in `/etc/bashrc` and `/etc/zshrc`).
+
+On NixOS, all three are injected: `environment.shellInit` appears in
+`/etc/profile` (via bash) and `/etc/zshenv` (via zsh);
+`environment.loginShellInit` appears in `/etc/profile` (via bash) and
+`/etc/zprofile` (via zsh).
 
 ### 2. Standalone bootstrap: `system.build.setEnvironment`
 
@@ -161,21 +173,22 @@ This is a single shell script generated once per system configuration. It is
 sourced by shell init files, gated by a platform-specific guard variable so
 it only runs once per shell process.
 
-| Platform | Output path | Guard variable |
-|----------|------------|----------------|
-| NixOS | `config.system.build.setEnvironment` | `__NIXOS_SET_ENVIRONMENT_DONE` |
+| Platform   | Output path                          | Guard variable                      |
+| ---------- | ------------------------------------ | ----------------------------------- |
+| NixOS      | `config.system.build.setEnvironment` | `__NIXOS_SET_ENVIRONMENT_DONE`      |
 | nix-darwin | `config.system.build.setEnvironment` | `__NIX_DARWIN_SET_ENVIRONMENT_DONE` |
 
 **Where `setEnvironment` is sourced:**
 
-| Shell | Platform | Sourced in | How |
-|-------|----------|-----------|-----|
-| Bash | NixOS | `/etc/profile` | `. ${config.system.build.setEnvironment}` |
-| Bash | nix-darwin | `/etc/bashrc` | `. ${config.system.build.setEnvironment}` |
-| Zsh | NixOS | `/etc/zshenv` | `. ${config.system.build.setEnvironment}` |
-| Zsh | nix-darwin | `/etc/zshenv` | `. ${config.system.build.setEnvironment}` (inside `[[ -o rcs ]]`) |
+| Shell | Platform   | Sourced in     | How                                                               |
+| ----- | ---------- | -------------- | ----------------------------------------------------------------- |
+| Bash  | NixOS      | `/etc/profile` | `. ${config.system.build.setEnvironment}`                         |
+| Bash  | nix-darwin | `/etc/bashrc`  | `. ${config.system.build.setEnvironment}`                         |
+| Zsh   | NixOS      | `/etc/zshenv`  | `. ${config.system.build.setEnvironment}`                         |
+| Zsh   | nix-darwin | `/etc/zshenv`  | `. ${config.system.build.setEnvironment}` (inside `[[ -o rcs ]]`) |
 
 The guard pattern is always:
+
 ```sh
 if [ -z "$__<PLATFORM>_SET_ENVIRONMENT_DONE" ]; then
     . /nix/store/...-set-environment
@@ -281,6 +294,7 @@ NixOS does **not** have a separate `setAliases` derivation; aliases are
 injected directly into each shell's init file.
 
 **Key differences:**
+
 - NixOS optionally prepends `~/bin` and `~/.local/bin` to `PATH` inside
   `set-environment`; nix-darwin does not.
 - nix-darwin exposes `system.build.setAliases` as a separate file; NixOS
@@ -290,7 +304,7 @@ injected directly into each shell's init file.
 
 ### 3. How shell modules consume both
 
-Each shell module does three things:
+**On NixOS**, each shell module does three things:
 
 1. **Source `setEnvironment`** once per shell process, gated by the platform
    done-flag.
@@ -301,17 +315,22 @@ Each shell module does three things:
 3. **Merge `environment.shellAliases`** into its own `shellAliases` with
    `lib.mkDefault` priority.
 
+**On nix-darwin**, bash and zsh only inject `environment.interactiveShellInit`.
+`environment.shellInit` and `environment.loginShellInit` are not wired into
+bash or zsh at all — they are consumed exclusively by `programs.fish` (when
+enabled) as a POSIX-sh-to-fish translation bridge.
+
 ### 4. Default accumulated values
 
-| Option | nix-darwin | NixOS |
-|--------|-----------|-------|
-| `shellInit` | `""` (declared but **never injected**) | `""` (injected into `/etc/profile` via bash, `/etc/zshenv` via zsh) |
-| `loginShellInit` | `""` (declared but **never injected**) | `""` (injected into `/etc/profile` via bash, `/etc/zprofile` via zsh) |
-| `interactiveShellInit` | `""` (nix-index when enabled) | `""` (nix-index or similar when enabled) |
-| `shellAliases` | None | `ls`, `ll`, `l` with `mkDefault` (when `environment.shell.enable = true`) |
-| `variables` | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS`, `EDITOR`, `PAGER` | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS`, plus `sessionVariables` |
-| `extraInit` | `NIX_USER_PROFILE_DIR`, `NIX_PROFILES` | `NIX_USER_PROFILE_DIR`, `NIX_PROFILES` |
-| `systemPath` | profiles + `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | profiles + `~/bin` (if enabled) + `~/.local/bin` (if enabled) |
+| Option                 | nix-darwin                                                         | NixOS                                                                     |
+| ---------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `shellInit`            | `""` (bash/zsh: **never injected**; fish: translated when enabled) | `""` (injected into `/etc/profile` via bash, `/etc/zshenv` via zsh)       |
+| `loginShellInit`       | `""` (bash/zsh: **never injected**; fish: translated when enabled) | `""` (injected into `/etc/profile` via bash, `/etc/zprofile` via zsh)     |
+| `interactiveShellInit` | `""` (nix-index when enabled)                                      | `""` (nix-index or similar when enabled)                                  |
+| `shellAliases`         | None                                                               | `ls`, `ll`, `l` with `mkDefault` (when `environment.shell.enable = true`) |
+| `variables`            | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS`, `EDITOR`, `PAGER`              | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS`, plus `sessionVariables`               |
+| `extraInit`            | `NIX_USER_PROFILE_DIR`, `NIX_PROFILES`                             | `NIX_USER_PROFILE_DIR`, `NIX_PROFILES`                                    |
+| `systemPath`           | profiles + `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`          | profiles + `~/bin` (if enabled) + `~/.local/bin` (if enabled)             |
 
 **Resulting script content — nix-darwin:**
 
@@ -346,11 +365,11 @@ export NIX_PROFILES="..."
 
 ### File Layout
 
-| File | When | Purpose |
-|------|------|---------|
-| `/etc/profile` | Login | Environment setup, login init, bridges to `/etc/bashrc` |
-| `/etc/bashrc` | Interactive | Aliases, prompt, completion, interactive init |
-| `/etc/bash_logout` | Logout | Cleanup (reset terminal title) |
+| File               | When        | Purpose                                                 |
+| ------------------ | ----------- | ------------------------------------------------------- |
+| `/etc/profile`     | Login       | Environment setup, login init, bridges to `/etc/bashrc` |
+| `/etc/bashrc`      | Interactive | Aliases, prompt, completion, interactive init           |
+| `/etc/bash_logout` | Logout      | Cleanup (reset terminal title)                          |
 
 ### `/etc/profile`
 
@@ -377,6 +396,7 @@ fi
 ```
 
 **Key behaviors:**
+
 - `/etc/profile` is **generated from scratch**; there is no stock file.
 - `__ETC_PROFILE_DONE` is exported so non-login child shells can skip re-sourcing.
 - `/etc/profile` explicitly sources `/etc/bashrc` at the end for all bash shells.
@@ -397,6 +417,7 @@ fi
 ```
 
 **Key behaviors:**
+
 - `/etc/profile` is **preserved**; nix-darwin only appends via the stock macOS guard.
 - `setEnvironment` is **not** sourced here — it is sourced in `/etc/bashrc` instead.
 - The bash guard `if [ "${BASH-no}" != "no" ]` bridges to `/etc/bashrc`.
@@ -427,21 +448,23 @@ if test -f /etc/bashrc.local; then . /etc/bashrc.local; fi
 ```
 
 **Key behaviors:**
+
 - Has a **fallback**: if `__ETC_PROFILE_DONE` is missing, it sources `/etc/profile`.
 - This fallback re-runs `setEnvironment` (guarded, so it's a no-op).
 - Interactive guard is `if [ -n "$PS1" ]`.
 - `setEnvironment` was already sourced in `/etc/profile`; not sourced again here.
-  - `${cfg.interactiveShellInit}` expands to the NixOS bash module's default:
-    ```sh
-    # Disable hashing (i.e. caching) of command lookups.
-    set +h
+- `${cfg.interactiveShellInit}` expands to the NixOS bash module's default:
 
-    ${cfg.promptInit}
-    ${cfg.promptPluginInit}
-    ${bashAliases}
+  ```sh
+  # Disable hashing (i.e. caching) of command lookups.
+  set +h
 
-    ${cfge.interactiveShellInit}   # ← environment.interactiveShellInit
-    ```
+  ${cfg.promptInit}
+  ${cfg.promptPluginInit}
+  ${bashAliases}
+
+  ${cfge.interactiveShellInit}   # ← environment.interactiveShellInit
+  ```
 
 #### nix-darwin
 
@@ -469,6 +492,7 @@ if test -f /etc/bash.local; then source /etc/bash.local; fi
 ```
 
 **Key behaviors:**
+
 - `setEnvironment` is sourced **here**, not in `/etc/profile`.
 - Interactive guard is `[[ $- != *i* ]] && return` (not `PS1`).
 - Term-specific file `bashrc_$TERM_PROGRAM` is sourced before anything else.
@@ -499,16 +523,16 @@ Not generated.
 
 ### Bash: Platform Differences Summary
 
-| Aspect | NixOS | nix-darwin |
-|--------|-------|-----------|
-| `/etc/profile` | Generated from scratch | Stock macOS file preserved |
-| `setEnvironment` | Sourced in `/etc/profile` | Sourced in `/etc/bashrc` |
-| Login→interactive bridge | End of generated `/etc/profile` | Stock `/etc/profile` guard |
-| Interactive guard | `if [ -n "$PS1" ]` | `[[ $- != *i* ]] && return` |
-| Term-specific file | None | `bashrc_$TERM_PROGRAM` |
-| Local file suffix | `.local` | `.local` (but path is `/etc/bash.local`) |
-| `knownSha256Hashes` | None | `/etc/bashrc` |
-| `/etc/bash_logout` | Generated | Not generated |
+| Aspect                   | NixOS                           | nix-darwin                               |
+| ------------------------ | ------------------------------- | ---------------------------------------- |
+| `/etc/profile`           | Generated from scratch          | Stock macOS file preserved               |
+| `setEnvironment`         | Sourced in `/etc/profile`       | Sourced in `/etc/bashrc`                 |
+| Login→interactive bridge | End of generated `/etc/profile` | Stock `/etc/profile` guard               |
+| Interactive guard        | `if [ -n "$PS1" ]`              | `[[ $- != *i* ]] && return`              |
+| Term-specific file       | None                            | `bashrc_$TERM_PROGRAM`                   |
+| Local file suffix        | `.local`                        | `.local` (but path is `/etc/bash.local`) |
+| `knownSha256Hashes`      | None                            | `/etc/bashrc`                            |
+| `/etc/bash_logout`       | Generated                       | Not generated                            |
 
 ---
 
@@ -516,13 +540,14 @@ Not generated.
 
 ### File Layout
 
-| File | When | Purpose |
-|------|------|---------|
-| `/etc/zshenv` | All | Environment, `fpath`, `setEnvironment` |
-| `/etc/zprofile` | Login | Login init, aliases |
-| `/etc/zshrc` | Interactive | History, completion, prompt, plugins |
+| File            | When        | Purpose                                |
+| --------------- | ----------- | -------------------------------------- |
+| `/etc/zshenv`   | All         | Environment, `fpath`, `setEnvironment` |
+| `/etc/zprofile` | Login       | Login init, aliases                    |
+| `/etc/zshrc`    | Interactive | History, completion, prompt, plugins   |
 
 Zsh has a **fixed startup order** regardless of login vs interactive:
+
 1. `/etc/zshenv` → `~/.zshenv`
 2. `/etc/zprofile` → `~/.zprofile` (login only)
 3. `/etc/zshrc` → `~/.zshrc` (interactive only)
@@ -558,6 +583,7 @@ if test -f /etc/zshenv.local; then . /etc/zshenv.local; fi
 ```
 
 **Key behaviors:**
+
 - Sources `setEnvironment` for **all** shells (not just login).
 - Sets up `fpath` for completions.
 - Injects both `environment.shellInit` and `programs.zsh.shellInit`.
@@ -586,6 +612,7 @@ if test -f /etc/zshenv.local; then source /etc/zshenv.local; fi
 ```
 
 **Key behaviors:**
+
 - Wraps everything in `if [[ -o rcs ]]` — respects `NO_RCS`.
 - Does **not** inject `environment.shellInit` (only `programs.zsh.shellInit`).
 
@@ -608,6 +635,7 @@ if test -f /etc/zprofile.local; then . /etc/zprofile.local; fi
 ```
 
 **Key behaviors:**
+
 - Minimal — just login init.
 - Does **not** include aliases.
 
@@ -627,6 +655,15 @@ if test -f /etc/zprofile.local; then source /etc/zprofile.local; fi
 ```
 
 **Key behaviors:**
+
+- `${zshVariables}` expands to plain (non-exported) variable assignments
+  generated from `programs.zsh.variables` — a nix-darwin-specific option
+  with no NixOS equivalent:
+
+  ```nix
+  zshVariables = mapAttrsToList (n: v: ''${n}="${v}"'') cfg.variables;
+  ```
+
 - Includes `${config.system.build.setAliases.text}` (not in NixOS zprofile).
 - Has `knownSha256Hashes` for activation backup.
 
@@ -642,6 +679,7 @@ The interactive file.
 if [ -n "$__ETC_ZSHRC_SOURCED" -o -n "$NOSYSZSHRC" ]; then return; fi
 __ETC_ZSHRC_SOURCED=1
 
+# setopt driven by cfg.setOptions (default: HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK)
 setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK
 HOST=${config.networking.fqdnOrHostName}
 SAVEHIST=2000
@@ -650,13 +688,13 @@ HISTFILE=$HOME/.zsh_history
 
 . /etc/zinputrc
 
-autoload -U compinit && compinit
-autoload -U bashcompinit && bashcompinit
+autoload -U compinit && compinit          # conditional on cfg.enableGlobalCompInit (default: true)
+# autoload -U bashcompinit && bashcompinit  # conditional on cfg.enableBashCompletion (default: false)
 
 ${cfge.interactiveShellInit}
 ${cfg.interactiveShellInit}
 
-eval "$(${pkgs.coreutils}/bin/dircolors -b)"
+eval "$(${pkgs.coreutils}/bin/dircolors -b)"  # conditional on cfg.enableLsColors (default: true)
 ${zshAliases}
 ${cfg.promptInit}
 
@@ -664,7 +702,15 @@ if test -f /etc/zshrc.local; then . /etc/zshrc.local; fi
 ```
 
 **Key behaviors:**
-- Sets history options, compinit, dircolors, aliases, prompt.
+
+- `setopt` is driven by `cfg.setOptions`; the three history options are the
+  default value but the block is omitted entirely if `cfg.setOptions = []`.
+- `compinit` is conditional on `cfg.enableGlobalCompInit` (defaults to
+  `cfg.enableCompletion`, which defaults to `true` — so present by default).
+- `bashcompinit` is conditional on `cfg.enableBashCompletion` (defaults to
+  **`false`**) — **not present in a stock config**.
+- `dircolors` is conditional on `cfg.enableLsColors` (defaults to `true` —
+  so present by default).
 - No re-sourcing guard between `zprofile` and `zshrc` — zsh's startup order handles that.
 
 #### nix-darwin
@@ -678,37 +724,50 @@ __ETC_ZSHRC_SOURCED=1
 SAVEHIST=2000
 HISTSIZE=2000
 HISTFILE=$HOME/.zsh_history
-setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK
+setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK   # hardcoded, not from cfg.setOptions
+
 bindkey -e
 
 ${config.environment.interactiveShellInit}
 ${cfg.interactiveShellInit}
+
 ${cfg.promptInit}
 
-autoload -U compinit && compinit
-autoload -U bashcompinit && bashcompinit
+autoload -U compinit && compinit          # conditional on cfg.enableGlobalCompInit (default: true)
+autoload -U bashcompinit && bashcompinit  # conditional on cfg.enableBashCompletion (default: true)
 
-# Plugin sources (autosuggestions, syntax-highlighting, fzf, etc.)
+# Plugin sources (conditional on their respective enable flags, all default false):
+# autosuggestions, syntax-highlighting, fast-syntax-highlighting, fzf-completion, fzf-git, fzf-history
 
 if test -f /etc/zshrc.local; then source /etc/zshrc.local; fi
 ```
 
 **Key behaviors:**
-- Has plugins (autosuggestions, syntax-highlighting, fzf) that NixOS handles elsewhere.
-- `bindkey -e` is set (NixOS does not set this in the generated file).
+
+- `setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK` is **hardcoded**
+  in the template — it is not driven by a `cfg.setOptions` option, unlike
+  NixOS where it is the default value of a configurable list.
+- `bindkey -e` is set unconditionally (NixOS does not set this).
+- `bashcompinit` defaults to **`true`** on nix-darwin (unlike NixOS where it
+  defaults to `false`) — so it is present in a stock config.
+- All plugins (autosuggestions, syntax-highlighting, etc.) are conditional on
+  their respective enable flags, which all default to `false`.
 - Has `knownSha256Hashes` for activation backup.
 
 ### Zsh: Platform Differences Summary
 
-| Aspect | NixOS | nix-darwin |
-|--------|-------|-----------|
-| `zshenv` `rcs` guard | No | `if [[ -o rcs ]]` |
-| `zshenv` `environment.shellInit` | Injected | Not injected |
-| `zprofile` aliases | Not included | `${config.system.build.setAliases.text}` |
-| `zshrc` plugins | None in module | autosuggestions, syntax-highlighting, fzf |
-| `zshrc` keymap | Not set | `bindkey -e` |
-| `knownSha256Hashes` | None | All three files |
-| `setEnvironment` | `zshenv` unconditionally | `zshenv` inside `[[ -o rcs ]]` |
+| Aspect                           | NixOS                                    | nix-darwin                                             |
+| -------------------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| `zshenv` `rcs` guard             | No                                       | `if [[ -o rcs ]]`                                      |
+| `zshenv` `environment.shellInit` | Injected                                 | Not injected                                           |
+| `zprofile` aliases               | Not included                             | `${config.system.build.setAliases.text}`               |
+| `zprofile` `zshVariables`        | None                                     | `programs.zsh.variables` assignments                   |
+| `zshrc` `setopt`                 | Via `cfg.setOptions` (configurable list) | Hardcoded in template                                  |
+| `zshrc` `bashcompinit` default   | `false`                                  | `true`                                                 |
+| `zshrc` plugins                  | None in module                           | autosuggestions, syntax-highlighting, fzf (all opt-in) |
+| `zshrc` keymap                   | Not set                                  | `bindkey -e`                                           |
+| `knownSha256Hashes`              | None                                     | All three files                                        |
+| `setEnvironment`                 | `zshenv` unconditionally                 | `zshenv` inside `[[ -o rcs ]]`                         |
 
 ---
 
@@ -749,14 +808,15 @@ It is **POSIX sh** and is sourced by every shell module. The
 
 Home-manager generates **four** files for bash:
 
-| File | When | Generated by | Content |
-|------|------|--------------|---------|
-| `~/.bash_profile` | Login | bash module | Delegates to `~/.profile` and `~/.bashrc` |
-| `~/.profile` | Login | bash module | Sources `hm-session-vars.sh`, session vars, `profileExtra` |
-| `~/.bashrc` | Interactive | bash module | `bashrcExtra`, interactive gate, history, options, aliases, `initExtra` |
-| `~/.bash_logout` | Logout | bash module | `logoutExtra` (only if non-empty) |
+| File              | When        | Generated by | Content                                                                 |
+| ----------------- | ----------- | ------------ | ----------------------------------------------------------------------- |
+| `~/.bash_profile` | Login       | bash module  | Delegates to `~/.profile` and `~/.bashrc`                               |
+| `~/.profile`      | Login       | bash module  | Sources `hm-session-vars.sh`, session vars, `profileExtra`              |
+| `~/.bashrc`       | Interactive | bash module  | `bashrcExtra`, interactive gate, history, options, aliases, `initExtra` |
+| `~/.bash_logout`  | Logout      | bash module  | `logoutExtra` (only if non-empty)                                       |
 
 **`~/.bash_profile`:**
+
 ```sh
 # include .profile if it exists
 [[ -f ~/.profile ]] && . ~/.profile
@@ -769,6 +829,7 @@ This is a **delegation layer**: bash's dedicated login file bridges to the
 shared `~/.profile` (POSIX) and the dedicated `~/.bashrc` (bash-specific).
 
 **`~/.profile`:**
+
 ```sh
 . "${config.home.sessionVariablesPackage}/etc/profile.d/hm-session-vars.sh"
 
@@ -781,6 +842,7 @@ It is the shared login file that other POSIX shells (sh, ksh) can also
 source.
 
 **`~/.bashrc`:**
+
 ```sh
 ${cfg.bashrcExtra}
 
@@ -798,6 +860,7 @@ interactive section, after `bashrcExtra` (which runs even for
 non-interactive shells).
 
 **Key home-manager bash behaviors:**
+
 - `~/.bash_profile` delegates; it contains no init logic of its own.
 - `~/.profile` is POSIX and shared — other shells can source it.
 - `~/.bashrc` is bash-specific and guarded for interactivity.
@@ -813,16 +876,17 @@ non-interactive shells).
 Home-manager generates **up to six** files for zsh, depending on which
 options are set:
 
-| File | When | Generated by | Content |
-|------|------|--------------|---------|
-| `~/.zshenv` | All | zsh module | Sources `hm-session-vars.sh`, session vars |
-| `~/.zprofile` | Login | zsh module | `profileExtra` (only if non-empty) |
-| `~/.zshrc` | Interactive | zsh module | `initContent` (ordered fragments) |
-| `~/.zlogin` | Login | zsh module | `loginExtra` (only if non-empty) |
-| `~/.zlogout` | Logout | zsh module | `logoutExtra` (only if non-empty) |
-| `${dotDir}/.zshenv` | All | zsh module | ZDOTDIR redirect (when `dotDir` is set) |
+| File                | When        | Generated by | Content                                    |
+| ------------------- | ----------- | ------------ | ------------------------------------------ |
+| `~/.zshenv`         | All         | zsh module   | Sources `hm-session-vars.sh`, session vars |
+| `~/.zprofile`       | Login       | zsh module   | `profileExtra` (only if non-empty)         |
+| `~/.zshrc`          | Interactive | zsh module   | `initContent` (ordered fragments)          |
+| `~/.zlogin`         | Login       | zsh module   | `loginExtra` (only if non-empty)           |
+| `~/.zlogout`        | Logout      | zsh module   | `logoutExtra` (only if non-empty)          |
+| `${dotDir}/.zshenv` | All         | zsh module   | ZDOTDIR redirect (when `dotDir` is set)    |
 
 **`~/.zshenv`:**
+
 ```sh
 # Environment variables
 . "${config.home.sessionVariablesPackage}/etc/profile.d/hm-session-vars.sh"
@@ -839,23 +903,24 @@ The `.zshrc` is built from `cfg.initContent`, which is an ordered
 `types.lines` value. Fragments are added with specific `lib.mkOrder`
 priorities:
 
-| Order | Content |
-|-------|---------|
-| 500 (`mkBefore`) | _(reserved for user early init; nothing injected by default)_ |
-| 510 | `typeset -U path cdpath fpath manpath`; `cdpath` additions (conditional) |
-| 520 | `fpath` from `NIX_PROFILES`, `HELPDIR` |
-| 530 | `bindkey` (default keymap) |
-| 540 | `localVariables` |
-| 570 | `compinit` (unless Oh-My-Zsh/Prezto) |
-| 700 | autosuggestions plugin |
-| 950 | `setOptions` |
-| 1100 | aliases, global aliases |
-| 1150 | `dirHashes` |
-| 1200 | syntax highlighting plugin |
-| 1000 (default) | General `initContent` |
-| 1500 (`mkAfter`) | Last-run configuration |
+| Order            | Content                                                                  |
+| ---------------- | ------------------------------------------------------------------------ |
+| 500 (`mkBefore`) | _(reserved for user early init; nothing injected by default)_            |
+| 510              | `typeset -U path cdpath fpath manpath`; `cdpath` additions (conditional) |
+| 520              | `fpath` from `NIX_PROFILES`, `HELPDIR`                                   |
+| 530              | `bindkey` (default keymap, conditional on `cfg.defaultKeymap != null`)   |
+| 540              | `localVariables`                                                         |
+| 570              | `compinit` (unless Oh-My-Zsh/Prezto)                                     |
+| 700              | autosuggestions plugin                                                   |
+| 950              | `setOptions`                                                             |
+| 1100             | aliases, global aliases                                                  |
+| 1150             | `dirHashes`                                                              |
+| 1200             | syntax highlighting plugin                                               |
+| 1000 (default)   | General `initContent`                                                    |
+| 1500 (`mkAfter`) | Last-run configuration                                                   |
 
 **Key home-manager zsh behaviors:**
+
 - `~/.zshenv` sources `hm-session-vars.sh` for **all** shells, not just
   login shells. This is because zsh reads `zshenv` universally.
 - `~/.zprofile` is minimal and only contains `profileExtra` if set.
@@ -868,15 +933,15 @@ priorities:
 
 ### Bash vs Zsh in Home Manager: Key Differences
 
-| Aspect | Bash | Zsh |
-|--------|------|-----|
-| `hm-session-vars.sh` sourced in | `~/.profile` only | `~/.zshenv` (all shells) |
-| Login→interactive bridge | `~/.bash_profile` → `~/.profile` + `~/.bashrc` | Fixed startup order (`zprofile` → `zshrc`) |
-| Shared POSIX login file | `~/.profile` | `~/.zprofile` (zsh-specific, not shared) |
-| Interactive file model | String concatenation | Ordered `initContent` with `mkOrder` |
-| Interactive guard | `[[ $- == *i* ]] \|\| return` | No guard needed (`zshrc` is inherently interactive-only) |
-| Session variables guard | `__HM_SESS_VARS_SOURCED` | `__HM_ZSH_SESS_VARS_SOURCED` |
-| File count | Always 3–4 files | 1–6 files depending on options |
+| Aspect                          | Bash                                           | Zsh                                                      |
+| ------------------------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| `hm-session-vars.sh` sourced in | `~/.profile` only                              | `~/.zshenv` (all shells)                                 |
+| Login→interactive bridge        | `~/.bash_profile` → `~/.profile` + `~/.bashrc` | Fixed startup order (`zprofile` → `zshrc`)               |
+| Shared POSIX login file         | `~/.profile`                                   | `~/.zprofile` (zsh-specific, not shared)                 |
+| Interactive file model          | String concatenation                           | Ordered `initContent` with `mkOrder`                     |
+| Interactive guard               | `[[ $- == *i* ]] \|\| return`                  | No guard needed (`zshrc` is inherently interactive-only) |
+| Session variables guard         | `__HM_SESS_VARS_SOURCED`                       | `__HM_ZSH_SESS_VARS_SOURCED`                             |
+| File count                      | Always 3–4 files                               | 1–6 files depending on options                           |
 
 ### Shell Integration Mechanism (`enable*Integration`)
 
@@ -926,6 +991,7 @@ mkShellIntegrationOption = name: { config, baseName ? name, ... }:
 ```
 
 **Default behavior:**
+
 - `home.shell.enableShellIntegration = true` (global default)
 - `home.shell.enableBashIntegration = true` (inherits global)
 - `programs.eza.enableBashIntegration = true` (inherits `home.shell`)
@@ -985,6 +1051,7 @@ programs.zsh.initContent = mkIf cfg.enableZshIntegration ''
 ```
 
 **Key observations:**
+
 - The integration flag controls **which shell's init file** gets the hook.
 - Aliases go into `programs.<shell>.shellAliases` (merged by the shell module).
 - Init scripts go into `programs.<shell>.initExtra` / `initContent` / `interactiveShellInit`.

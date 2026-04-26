@@ -4,20 +4,23 @@
 #
 # Usage:
 #   mkPosixShellModule {
-#     package = pkgs.ksh;
-#     etcRcPath = "kshrc";      # optional, default: package.pname + "rc"
-#     homeRcPath = ".kshrc";    # optional, default: "." + package.pname + "rc"
+#     name = "ksh";              # mandatory, sets programs.ksh namespace
+#     etcRcPath = "kshrc";       # optional, default: name + "rc"
+#     homeRcPath = ".kshrc";     # optional, default: "." + name + "rc"
 #   }
 # => { nixosModule, darwinModule, homeManagerModule }
+#
+# The default package is pkgs.<name>, resolved at module-evaluation time.
+# Users can override programs.<name>.package to use a different variant.
 
 {
-  package,
-  etcRcPath ? package.pname + "rc",
-  homeRcPath ? "." + package.pname + "rc",
+  name,
+  etcRcPath ? name + "rc",
+  homeRcPath ? "." + name + "rc",
 }:
 
 let
-  pname = package.pname or package.name;
+  pname = name;
 in
 
 {
@@ -42,7 +45,7 @@ in
 
         package = lib.mkOption {
           type = lib.types.package;
-          default = package;
+          default = pkgs.${pname};
           defaultText = lib.literalExpression "pkgs.${pname}";
           description = "The ${pname} package to use.";
         };
@@ -99,18 +102,17 @@ in
 
         environment.variables.ENV = lib.mkDefault "/etc/${etcRcPath}";
 
-        programs.${pname}.shellInit = ''
-          if [ -z "$__NIXOS_SET_ENVIRONMENT_DONE" ]; then
-            . ${config.system.build.setEnvironment}
-          fi
-          ${config.environment.shellInit}
-        '';
-
-        programs.${pname}.loginShellInit = config.environment.loginShellInit;
-
-        programs.${pname}.interactiveShellInit = config.environment.interactiveShellInit;
-
-        programs.${pname}.shellAliases = lib.mapAttrs (name: lib.mkDefault) config.environment.shellAliases;
+        programs.${pname} = {
+          shellInit = ''
+            if [ -z "$__NIXOS_SET_ENVIRONMENT_DONE" ]; then
+              . ${config.system.build.setEnvironment}
+            fi
+            ${config.environment.shellInit}
+          '';
+          loginShellInit = config.environment.loginShellInit;
+          interactiveShellInit = config.environment.interactiveShellInit;
+          shellAliases = lib.mapAttrs (name: lib.mkDefault) config.environment.shellAliases;
+        };
 
         environment.etc.${etcRcPath}.text = ''
           # /etc/${etcRcPath}: DO NOT EDIT -- this file has been generated automatically.
@@ -187,7 +189,7 @@ in
 
         package = lib.mkOption {
           type = lib.types.package;
-          default = package;
+          default = pkgs.${pname};
           defaultText = lib.literalExpression "pkgs.${pname}";
           description = "The ${pname} package to use.";
         };
@@ -245,16 +247,16 @@ in
         environment.variables.ENV = lib.mkDefault "/etc/${etcRcPath}";
         environment.variables.LANG = lib.mkDefault "C.UTF-8";
 
-        programs.${pname}.shellInit = ''
-          if [ -z "$__NIX_DARWIN_SET_ENVIRONMENT_DONE" ]; then
-            . ${config.system.build.setEnvironment}
-          fi
-          ${config.environment.shellInit}
-        '';
-
-        programs.${pname}.loginShellInit = config.environment.loginShellInit;
-
-        programs.${pname}.interactiveShellInit = config.environment.interactiveShellInit;
+        programs.${pname} = {
+          shellInit = ''
+            if [ -z "$__NIX_DARWIN_SET_ENVIRONMENT_DONE" ]; then
+              . ${config.system.build.setEnvironment}
+            fi
+            ${config.environment.shellInit}
+          '';
+          loginShellInit = config.environment.loginShellInit;
+          interactiveShellInit = config.environment.interactiveShellInit;
+        };
 
         environment.etc.${etcRcPath}.text = ''
           # /etc/${etcRcPath}: DO NOT EDIT -- this file has been generated automatically.
@@ -352,7 +354,7 @@ in
 
         package = lib.mkOption {
           type = lib.types.package;
-          default = package;
+          default = pkgs.${pname};
           defaultText = lib.literalExpression "pkgs.${pname}";
           description = "The ${pname} package to use.";
         };
@@ -412,11 +414,13 @@ in
       config = lib.mkIf cfg.enable {
         home.packages = [ cfg.package ];
 
-        programs.${pname}.initExtra = lib.mkIf (cfg.logoutExtra != "") (
-          lib.mkAfter ''
-            trap ". $HOME/.${pname}_logout" EXIT
-          ''
-        );
+        programs.${pname} = {
+          initExtra = lib.mkIf (cfg.logoutExtra != "") (
+            lib.mkAfter ''
+              trap ". $HOME/.${pname}_logout" EXIT
+            ''
+          );
+        };
 
         home.file.".profile".text = ''
           # ~/.profile: DO NOT EDIT -- this file has been generated automatically.
